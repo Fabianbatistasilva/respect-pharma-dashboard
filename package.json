@@ -1,0 +1,19 @@
+{
+  "name": "respect-pharma-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Scraper Playwright para produtos do vendedor Murilo no Respect Pharma.",
+  "scripts": {
+    "scrape:respect": "node src/scrape_respect.js",
+    "dashboard": "node src/dashboard_server.js",
+    "test": "node --test test/*.js",
+    "check": "node --check src/scrape_respect.js && node --check src/export_respect_pdf.js && node --check src/dashboard_server.js && node --check src/publish_site.js",
+    "pdf:respect": "node src/export_respect_pdf.js",
+    "publish:site": "node src/publish_site.js",
+    "install:browsers": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.53.0"
+  }
+}

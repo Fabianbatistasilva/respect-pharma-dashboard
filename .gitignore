@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+.parcel-cache/
+.turbo/
+coverage/
+playwright-report/
+test-results/
+
+# Static publish output
+public/
+dist/
+
+# Generated scraper outputs kept out of Git history.
+# GitHub Actions regenerates and publishes these as a Pages artifact.
+data/respect_products_raw.json
+data/respect_products.csv
+data/*_debug.html
+data/*.html
+reports/respect_price_report*.html
+reports/respect_price_report*.md
+reports/respect_price_report*.pdf
+screenshots/*.png
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
