@@ -9,7 +9,7 @@ const DATA_DIR = path.join(ROOT_DIR, 'data');
 const REPORTS_DIR = path.join(ROOT_DIR, 'reports');
 const SCREENSHOTS_DIR = path.join(ROOT_DIR, 'screenshots');
 const MEDICAL_BRASIL_URL = 'https://medical-brasil.catalog.kyte.site';
-const PY_PHARMA_URL = 'https://paraguaypharmaceuticals.com/';
+const PY_PHARMA_URL = 'https://pypharma.li/';
 
 const TARGETS = [
   {
@@ -681,10 +681,16 @@ async function runScrape(options = {}) {
   try {
     for (const target of TARGETS) {
       const page = await context.newPage();
-      const products = await scrapeTarget(page, target);
-      totalsByUrl[target.url] = products.length;
-      allProducts.push(...products);
-      await page.close();
+      try {
+        const products = await scrapeTarget(page, target);
+        totalsByUrl[target.url] = products.length;
+        allProducts.push(...products);
+      } catch (error) {
+        totalsByUrl[target.url] = 0;
+        await handleTargetScrapeFailure(target, error);
+      } finally {
+        await page.close().catch(() => {});
+      }
     }
   } finally {
     await context.close();
@@ -717,10 +723,14 @@ async function ensureDirectories() {
 async function scrapeTarget(page, target) {
   console.log(`\n[${target.sourceType}] Abrindo ${target.url}`);
 
-  await page.goto(target.url, {
+  const response = await page.goto(target.url, {
     waitUntil: 'domcontentloaded',
     timeout: 90_000,
   });
+  const status = response?.status();
+  if (status && status >= 400) {
+    console.warn(`[${target.sourceType}] HTTP ${status} ao abrir ${target.url}; tentando continuar.`);
+  }
 
   await waitForPageToSettle(page);
   await closeSafePopups(page);
@@ -779,6 +789,37 @@ async function scrapeTarget(page, target) {
 
   console.log(`[${target.sourceType}] Produtos capturados: ${normalized.length}`);
   return normalized;
+}
+
+async function handleTargetScrapeFailure(target, error) {
+  console.warn(
+    `[${target.sourceType}] Falha na coleta de ${target.url}; seguindo com 0 produtos. ` +
+      formatErrorMessage(error),
+  );
+
+  await fs.writeFile(target.debugHtml, renderTargetFailureDebugHtml(target, error), 'utf8').catch(() => {});
+  await fs.rm(target.screenshot, { force: true }).catch(() => {});
+}
+
+function renderTargetFailureDebugHtml(target, error) {
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Falha de coleta - ${escapeHtml(target.sourceType)}</title>
+</head>
+<body>
+  <h1>Falha de coleta recuperavel</h1>
+  <p>Fonte: ${escapeHtml(target.sourceType)}</p>
+  <p>URL: ${escapeHtml(target.url)}</p>
+  <pre>${escapeHtml(formatErrorMessage(error))}</pre>
+</body>
+</html>
+`;
+}
+
+function formatErrorMessage(error) {
+  return error?.stack || error?.message || String(error || 'Erro desconhecido');
 }
 
 async function scrapeMedicalBrasilCatalog(page, target) {

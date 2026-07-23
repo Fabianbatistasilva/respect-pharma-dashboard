@@ -132,6 +132,16 @@ test('parsePyPharmaProductPayload extracts modal JSON and keeps insured price as
   assert.equal(enriched.marca_canonica, 'Spectrum Pharma');
   assert.equal(enriched.marca_familia, 'Spectrum Pharma');
   assert.equal(enriched.status, 'disponivel');
+
+  const fallbackProduct = normalizePyPharmaProduct({
+    onclick:
+      'openProductModal({"nome":"Produto PyPharma","preco":100,"descricao":"Produto teste","emEstoque":true})',
+    text: 'Produto PyPharma\nR$ 100,00',
+    className: 'loja-mob-product-item',
+    category: 'PYPHARMA',
+  });
+
+  assert.equal(fallbackProduct.source_url, 'https://pypharma.li/');
 });
 
 test('enrichProduct derives brand fields, family, mg total, cost and ranking', () => {

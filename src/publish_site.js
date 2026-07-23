@@ -10,6 +10,9 @@ const REQUIRED_FILES = [
   'reports/respect_price_report.md',
   'data/respect_products_raw.json',
   'data/respect_products.csv',
+];
+
+const OPTIONAL_FILES = [
   'screenshots/promo_page.png',
   'screenshots/main_page.png',
   'screenshots/pypharma_page.png',
@@ -26,6 +29,17 @@ async function copyFile(relativePath) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.copyFile(source, destination);
   return toPosix(path.relative(ROOT_DIR, destination));
+}
+
+async function copyOptionalFile(relativePath) {
+  try {
+    await fs.access(path.join(ROOT_DIR, relativePath));
+  } catch {
+    console.warn(`Arquivo opcional ausente, publicacao continua: ${relativePath}`);
+    return null;
+  }
+
+  return copyFile(relativePath);
 }
 
 async function writeIndex() {
@@ -77,6 +91,10 @@ async function main() {
   const copiedFiles = [];
   for (const relativePath of REQUIRED_FILES) {
     copiedFiles.push(await copyFile(relativePath));
+  }
+  for (const relativePath of OPTIONAL_FILES) {
+    const copiedFile = await copyOptionalFile(relativePath);
+    if (copiedFile) copiedFiles.push(copiedFile);
   }
 
   await writeIndex();
