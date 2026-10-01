@@ -6,8 +6,8 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    # Runs every hour so the price panels stay close to the stores' catalogs.
-    - cron: '17 * * * *'
+    # Runs at 06:00 and 18:00 in America/Sao_Paulo (UTC-3).
+    - cron: '0 9,21 * * *'
 
 permissions:
   contents: read
