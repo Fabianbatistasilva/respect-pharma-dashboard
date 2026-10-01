@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comparador de preços</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --surface: #ffffff; --line: #e2e1dc; --ink: #1c1c1a; --ink-2: #55544f; --ink-3: #85847d;
+    --accent: #1f5fbf; --win-bg: #e3f1e6; --win-ink: #17603a; --warn-bg: #fbeed3; --warn-ink: #7a4d00;
+    --bad-bg: #f9e1de; --bad-ink: #8f261c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --surface: #1f1f1d; --line: #35352f; --ink: #ecebe6; --ink-2: #b4b3ab; --ink-3: #86857e;
+      --accent: #7fb0f5; --win-bg: #1c3a29; --win-ink: #9ad9b1; --warn-bg: #40300f; --warn-ink: #f0c877;
+      --bad-bg: #45211d; --bad-ink: #f2a79e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--ink-3); }
+  .sub { color: var(--ink-2); font-size: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile b { display: block; font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tile span { color: var(--ink-2); font-size: 12px; }
+  .banner { background: var(--bad-bg); color: var(--bad-ink); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+  .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; font: inherit; color: var(--ink-2); cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 10px; }
+  input[type="search"], select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input[type="search"] { min-width: 240px; flex: 1 1 240px; max-width: 420px; }
+  label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-2); }
+  .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--ink-2); font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .price { font-weight: 600; }
+  .win { background: var(--win-bg); }
+  .win .price { color: var(--win-ink); }
+  .tag { display: inline-block; font-size: 11px; border-radius: 10px; padding: 1px 8px; white-space: nowrap; border: 1px solid var(--line); color: var(--ink-2); }
+  .tag.win-tag { background: var(--win-bg); color: var(--win-ink); border-color: transparent; }
+  .tag.warn { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; }
+  .tag.bad { background: var(--bad-bg); color: var(--bad-ink); border-color: transparent; }
+  s { color: var(--ink-3); font-weight: 400; }
+  .count { margin: 8px 2px; }
+  .hidden { display: none; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Comparador de preços</h1>
+    <span class="sub" id="gerado"></span>
+    <span class="sub" id="cotacao"></span>
+  </header>
+  <div id="erros"></div>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="pares" aria-selected="true">Comparação entre lojas</button>
+    <button role="tab" data-tab="produtos" aria-selected="false">Todos os produtos</button>
+    <button role="tab" data-tab="mudancas" aria-selected="false">Mudanças de preço</button>
+  </div>
+
+  <section id="tab-pares">
+    <div class="filters">
+      <input type="search" id="p-busca" placeholder="Buscar produto ou marca…">
+      <select id="p-marca"><option value="">Todas as marcas</option></select>
+      <select id="p-vencedor">
+        <option value="">Qualquer loja mais barata</option>
+        <option value="shapetotal">Mais barato no Shape Total</option>
+        <option value="bypharmacon">Mais barato no ByPharmacon</option>
+        <option value="empate">Mesmo preço</option>
+      </select>
+      <select id="p-ordem">
+        <option value="pct">Maior diferença (%)</option>
+        <option value="abs">Maior diferença (valor)</option>
+        <option value="nome">Nome</option>
+      </select>
+      <label class="check"><input type="checkbox" id="p-estoque"> Só com estoque nas duas</label>
+      <label class="check"><input type="checkbox" id="p-baixa"> Incluir pares duvidosos</label>
+    </div>
+    <div class="count sub" id="p-contagem"></div>
+    <div class="wrap"><table>
+      <thead><tr>
+        <th>Produto</th><th>Marca</th><th class="num">Shape Total</th><th class="num">ByPharmacon</th>
+        <th class="num">Diferença</th><th>Mais barato</th><th>Correspondência</th>
+      </tr></thead>
+      <tbody id="p-corpo"></tbody>
+    </table></div>
+    <p class="sub">Os pares são montados automaticamente pelo nome, dose e embalagem. Confira os marcados como "provável" ou "duvidosa" antes de decidir; para corrigir um par, edite <code>correspondencias.json</code>. Os valores em reais usam a cotação que cada loja publica no dia, por isso o mesmo preço em dólar pode sair diferente em reais. Frete não incluído.</p>
+  </section>
+
+  <section id="tab-produtos" class="hidden">
+    <div class="filters">
+      <input type="search" id="t-busca" placeholder="Buscar produto ou princípio ativo (ex.: roacutan, enantato 250)…">
+      <select id="t-marca"><option value="">Todas as marcas</option></select>
+      <select id="t-categoria"><option value="">Todas as categorias</option></select>
+      <select id="t-loja">
+        <option value="">As duas lojas</option>
+        <option value="shapetotal">Shape Total</option>
+        <option value="bypharmacon">ByPharmacon</option>
+      </select>
+      <select id="t-ordem">
+        <option value="asc">Menor preço</option>
+        <option value="desc">Maior preço</option>
+        <option value="nome">Nome</option>
+      </select>
+      <label class="check"><input type="checkbox" id="t-estoque"> Só com estoque</label>
+    </div>
+    <div class="count sub" id="t-contagem"></div>
+    <div class="wrap"><table>
+      <thead><tr><th>Produto</th><th>Marca</th><th>Categoria</th><th>Loja</th><th class="num">Preço</th><th>Estoque</th></tr></thead>
+      <tbody id="t-corpo"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-mudancas" class="hidden">
+    <div class="count sub" id="m-contagem"></div>
+    <div class="wrap"><table>
+      <thead><tr><th>Quando</th><th>Loja</th><th>Produto</th><th class="num">Antes (US$)</th><th class="num">Depois (US$)</th><th class="num">Variação</th></tr></thead>
+      <tbody id="m-corpo"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script id="dados" type="application/json">__DADOS__</script>
+<script>
+const D = JSON.parse(document.getElementById('dados').textContent);
+const S = 'shapetotal', B = 'bypharmacon';
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const usd = (v) => 'US$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const norm = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const matches = (text, query) => norm(query).split(/\s+/).filter(Boolean).every((word) => text.includes(word));
+const R = D.cotacoes || {};
+const temReais = R[S] > 0 && R[B] > 0;
+const real = (v) => 'R$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+// Valor usado para comparar: reais pela cotação da própria loja; sem cotação, dólar.
+const valor = (p, dolares = p.preco) => temReais ? dolares * R[p.loja] : dolares;
+const dinheiro = (v) => temReais ? real(v) : usd(v);
+const when = (iso) => new Date(iso).toLocaleString('pt-BR', {dateStyle: 'short', timeStyle: 'short'});
+
+// As lojas escrevem a mesma marca de formas diferentes ("Cooper" e "cooper pharma"):
+// a primeira palavra identifica a marca; o nome exibido é o mais usado.
+const marcaChave = (p) => (norm(p.marca).match(/[a-z0-9+]+/) || ['sem marca'])[0];
+const marcaNomes = {};
+D.produtos.forEach((p) => {
+  const key = marcaChave(p), nome = p.marca ? p.marca.toUpperCase() : 'SEM MARCA';
+  marcaNomes[key] = marcaNomes[key] || {};
+  marcaNomes[key][nome] = (marcaNomes[key][nome] || 0) + 1;
+});
+const marcaRotulo = (key) => Object.entries(marcaNomes[key]).sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0][0];
+function preencher(id, opcoes) {
+  $(id).insertAdjacentHTML('beforeend', opcoes.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join(''));
+}
+
+const pares = D.pares.map((par) => {
+  const s = par[S], b = par[B];
+  const diff = Math.round((valor(b) - valor(s)) * 100) / 100;
+  const high = Math.max(valor(b), valor(s));
+  return {
+    ...par, s, b,
+    abs: Math.abs(diff),
+    pct: high > 0 ? Math.abs(diff) / high * 100 : 0,
+    vencedor: diff === 0 ? 'empate' : diff > 0 ? S : B,
+    marca: marcaChave(b.marca ? b : s),
+    texto: norm([s.nome, b.nome, s.marca, b.marca, s.detalhe].join(' ')),
+  };
+});
+const produtos = D.produtos.map((p) => ({...p, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe].join(' '))}));
+const contar = (lista, campo) => lista.reduce((acc, item) => (acc[item[campo]] = (acc[item[campo]] || 0) + 1, acc), {});
+const opcoesMarca = (lista, campo) => Object.entries(contar(lista, campo))
+  .map(([key, n]) => [key, `${marcaRotulo(key)} (${n})`]).sort((a, b) => a[1].localeCompare(b[1]));
+preencher('p-marca', opcoesMarca(pares, 'marca'));
+preencher('t-marca', opcoesMarca(produtos, 'marcaKey'));
+preencher('t-categoria', Object.entries(contar(produtos.filter((p) => p.cat), 'cat'))
+  .map(([key, n]) => [key, `${key} (${n})`]).sort((a, b) => a[1].localeCompare(b[1])));
+const confiaveis = pares.filter((par) => par.confianca !== 'baixa');
+
+$('gerado').textContent = 'Atualizado em ' + when(D.gerado_em) + ' · recarregue a página para ver a coleta mais recente';
+$('cotacao').textContent = temReais
+  ? `Cotação do dia (US$ 1): ${D.lojas[S]} ${real(R[S])} · ${D.lojas[B]} ${real(R[B])}`
+  : 'Sem cotação do dia: valores em dólar.';
+if (D.erros.length) {
+  $('erros').innerHTML = '<div class="banner"><b>Coleta incompleta.</b> ' + D.erros.map(esc).join(' ') + '</div>';
+}
+
+const tile = (value, label) => `<div class="tile"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
+const count = (store) => produtos.filter((p) => p.loja === store).length;
+$('tiles').innerHTML = [
+  tile(count(S), 'produtos no Shape Total'),
+  tile(count(B), 'produtos no ByPharmacon'),
+  tile(confiaveis.length, 'produtos comparáveis nas duas lojas'),
+  tile(confiaveis.filter((par) => par.vencedor === S).length, 'mais baratos no Shape Total'),
+  tile(confiaveis.filter((par) => par.vencedor === B).length, 'mais baratos no ByPharmacon'),
+  tile(confiaveis.filter((par) => par.vencedor === 'empate').length, 'com o mesmo preço'),
+].join('');
+
+function stockTag(p) {
+  if (!p.disponivel) return '<span class="tag bad">sem estoque</span>';
+  return `<span class="tag" title="${esc(p.estoque_detalhe)}">${esc(p.estoque)} em estoque</span>`;
+}
+function priceCell(p, isWinner) {
+  const original = p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : '';
+  const tiers = p.atacado.map((t) => `${t.min}+ un.: ${dinheiro(valor(p, t.preco))}`).join(' · ');
+  return `<td class="num${isWinner ? ' win' : ''}"><span class="price">${dinheiro(valor(p))}</span>${original}` +
+    (temReais ? `<div class="sub">${usd(p.preco)}</div>` : '') +
+    (tiers ? `<div class="sub">${esc(tiers)}</div>` : '') + `<div>${stockTag(p)}</div></td>`;
+}
+const CONF = {
+  confirmada: ['', 'confirmada à mão'],
+  alta: ['', 'automática'],
+  media: ['warn', 'provável — conferir'],
+  baixa: ['bad', 'duvidosa'],
+};
+
+function renderPares() {
+  const query = $('p-busca').value, winner = $('p-vencedor').value, order = $('p-ordem').value, brand = $('p-marca').value;
+  let rows = pares.filter((par) =>
+    ($('p-baixa').checked || par.confianca !== 'baixa') &&
+    (!winner || par.vencedor === winner) &&
+    (!brand || par.marca === brand) &&
+    (!$('p-estoque').checked || (par.s.disponivel && par.b.disponivel)) &&
+    matches(par.texto, query));
+  rows.sort(order === 'nome' ? (a, b) => a.s.nome.localeCompare(b.s.nome) : (a, b) => b[order] - a[order]);
+  $('p-contagem').textContent = rows.length + ' de ' + pares.length + ' pares';
+  $('p-corpo').innerHTML = rows.map((par) => {
+    const [cls, label] = CONF[par.confianca];
+    const cheaper = par.vencedor === 'empate'
+      ? '<span class="tag">mesmo preço</span>'
+      : `<span class="tag win-tag">${esc(D.lojas[par.vencedor])}</span>`;
+    return `<tr>
+      <td><div title="ID Shape Total: ${esc(par.s.id)}">${esc(par.s.nome)}</div>
+          <div class="sub" title="ID ByPharmacon: ${esc(par.b.id)}">${esc(par.b.nome)}</div></td>
+      <td>${esc(par.b.marca || par.s.marca)}</td>
+      ${priceCell(par.s, par.vencedor === S)}
+      ${priceCell(par.b, par.vencedor === B)}
+      <td class="num">${par.abs ? dinheiro(par.abs) + '<div class="sub">' + par.pct.toFixed(1).replace('.', ',') + '%</div>' : '—'}</td>
+      <td>${cheaper}</td>
+      <td><span class="tag ${cls}">${label}</span></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted">Nenhum par encontrado com esses filtros.</td></tr>';
+}
+
+const LIMITE = 400;
+function renderProdutos() {
+  const query = $('t-busca').value, store = $('t-loja').value, order = $('t-ordem').value;
+  const brand = $('t-marca').value, category = $('t-categoria').value;
+  let rows = produtos.filter((p) =>
+    (!store || p.loja === store) && (!brand || p.marcaKey === brand) && (!category || p.cat === category) && (!$('t-estoque').checked || p.disponivel) && matches(p.texto, query));
+  rows.sort(order === 'nome' ? (a, b) => a.nome.localeCompare(b.nome)
+    : order === 'asc' ? (a, b) => valor(a) - valor(b) : (a, b) => valor(b) - valor(a));
+  $('t-contagem').textContent = rows.length + ' produtos' + (rows.length > LIMITE ? ` (mostrando os primeiros ${LIMITE}; refine a busca)` : '');
+  $('t-corpo').innerHTML = rows.slice(0, LIMITE).map((p) => `<tr>
+      <td><div title="ID: ${esc(p.id)}">${esc(p.nome)}</div>${p.detalhe ? `<div class="sub">${esc(p.detalhe)}</div>` : ''}</td>
+      <td>${esc(p.marca)}</td><td>${esc(p.categoria)}</td>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(D.lojas[p.loja])}</a></td>
+      <td class="num"><span class="price">${dinheiro(valor(p))}</span>${p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : ''}${temReais ? `<div class="sub">${usd(p.preco)}</div>` : ''}</td>
+      <td>${stockTag(p)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="muted">Nenhum produto encontrado.</td></tr>';
+}
+
+function renderMudancas() {
+  $('m-contagem').textContent = D.mudancas.length
+    ? D.mudancas.length + ' mudanças de preço registradas (mais recentes primeiro)'
+    : 'Nenhuma mudança de preço registrada ainda. O histórico começa na primeira coleta e cresce a cada atualização.';
+  $('m-corpo').innerHTML = D.mudancas.map((m) => {
+    const pct = m.antes > 0 ? (m.depois - m.antes) / m.antes * 100 : 0;
+    const label = (pct > 0 ? 'subiu ' : 'caiu ') + Math.abs(pct).toFixed(1).replace('.', ',') + '%';
+    return `<tr><td>${esc(when(m.quando))}</td><td>${esc(D.lojas[m.loja])}</td><td>${esc(m.nome)}</td>
+      <td class="num">${usd(m.antes)}</td><td class="num"><span class="price">${usd(m.depois)}</span></td>
+      <td class="num"><span class="tag ${pct > 0 ? 'bad' : 'win-tag'}">${label}</span></td></tr>`;
+  }).join('');
+}
+
+document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach((other) => other.setAttribute('aria-selected', String(other === button)));
+  ['pares', 'produtos', 'mudancas'].forEach((name) => $('tab-' + name).classList.toggle('hidden', name !== button.dataset.tab));
+}));
+['p-busca', 'p-marca', 'p-vencedor', 'p-ordem', 'p-estoque', 'p-baixa'].forEach((id) => $(id).addEventListener('input', renderPares));
+['t-busca', 't-marca', 't-categoria', 't-loja', 't-ordem', 't-estoque'].forEach((id) => $(id).addEventListener('input', renderProdutos));
+renderPares(); renderProdutos(); renderMudancas();
+</script>
+</body>
+</html>

@@ -33,6 +33,10 @@ reports/respect_price_report*.md
 reports/respect_price_report*.pdf
 screenshots/*.png
 
+# Comparador: banco, log e painel sao gerados a cada execucao.
+comparador/data/
+__pycache__/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

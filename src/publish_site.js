@@ -12,6 +12,10 @@ const REQUIRED_FILES = [
   'data/respect_products.csv',
 ];
 
+// Painel gerado por comparador/comparador.py (Shape Total x ByPharmacon).
+const COMPARADOR_SOURCE = 'comparador/data/painel.html';
+const COMPARADOR_PAGE = 'comparador.html';
+
 const OPTIONAL_FILES = [
   'screenshots/promo_page.png',
   'screenshots/main_page.png',
@@ -42,17 +46,39 @@ async function copyOptionalFile(relativePath) {
   return copyFile(relativePath);
 }
 
-async function writeIndex() {
+async function copyComparador() {
+  try {
+    await fs.copyFile(path.join(ROOT_DIR, COMPARADOR_SOURCE), path.join(PUBLIC_DIR, COMPARADOR_PAGE));
+  } catch {
+    console.warn(`Painel do comparador ausente, publicacao continua: ${COMPARADOR_SOURCE}`);
+    return null;
+  }
+
+  return `public/${COMPARADOR_PAGE}`;
+}
+
+async function writeIndex(hasComparador) {
+  const comparadorLink = hasComparador
+    ? `<li><a href="./${COMPARADOR_PAGE}">Comparador de preços: Shape Total x ByPharmacon</a></li>`
+    : '';
   const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="0; url=./reports/respect_price_report.html">
-  <title>Respect Pharma Dashboard</title>
+  <meta name="robots" content="noindex">
+  <title>Painéis de preços</title>
+  <style>
+    body { font: 16px/1.5 system-ui, "Segoe UI", sans-serif; max-width: 640px; margin: 48px auto; padding: 0 16px; }
+    li { margin: 8px 0; }
+  </style>
 </head>
 <body>
-  <p>Redirecionando para <a href="./reports/respect_price_report.html">reports/respect_price_report.html</a>.</p>
+  <h1>Painéis de preços</h1>
+  <ul>
+    ${comparadorLink}
+    <li><a href="./reports/respect_price_report.html">Respect Pharma: relatório de preços</a></li>
+  </ul>
 </body>
 </html>
 `;
@@ -97,7 +123,10 @@ async function main() {
     if (copiedFile) copiedFiles.push(copiedFile);
   }
 
-  await writeIndex();
+  const comparadorFile = await copyComparador();
+  if (comparadorFile) copiedFiles.push(comparadorFile);
+
+  await writeIndex(Boolean(comparadorFile));
 
   console.log('Site estatico pronto em public/.');
   console.log('Arquivos publicados:');

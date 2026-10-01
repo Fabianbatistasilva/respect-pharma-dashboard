@@ -6,8 +6,8 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    # Runs at 00:00 and 12:00 in America/Sao_Paulo when Brazil is UTC-3.
-    - cron: '0 3,15 * * *'
+    # Runs every hour so the price panels stay close to the stores' catalogs.
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
@@ -47,6 +47,29 @@ jobs:
 
       - name: Scrape latest prices
         run: npm run scrape:respect
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # O historico de precos do comparador vive no cache entre as execucoes.
+      - name: Restore price history
+        uses: actions/cache@v4
+        with:
+          path: comparador/data/comparador.sqlite3
+          key: comparador-history-${{ github.run_id }}
+          restore-keys: |
+            comparador-history-
+
+      - name: Run comparador tests
+        working-directory: comparador
+        run: python -m unittest discover -s tests
+
+      # Uma loja fora do ar nao pode derrubar o deploy: o painel avisa o que faltou.
+      - name: Build Shape Total x ByPharmacon panel
+        working-directory: comparador
+        run: python comparador.py --config config.json --sem-alertas || echo "::warning::Comparador terminou com coleta incompleta"
 
       - name: Build static Pages artifact
         run: npm run publish:site

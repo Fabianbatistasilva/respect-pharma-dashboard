@@ -1,0 +1,12 @@
+{
+  "_como_usar": "O comparador casa os produtos das duas lojas automaticamente. Use 'confirmar' para forçar um par e 'rejeitar' para desfazer um par errado. Os IDs aparecem no painel, ao passar o mouse sobre o nome do produto.",
+  "confirmar": [
+    { "shapetotal": 2980, "bypharmacon": "prod_01M0J89D2N30E9H8SJXS0DSCWC", "nota": "ZPHC Ztrop 180 UI (5 x 36 UI)" },
+    { "shapetotal": 3174, "bypharmacon": "prod_01M0J89D3CN5MCXK87J35V6W2K", "nota": "ZPHC Ztrop 200 UI" },
+    { "shapetotal": 2467, "bypharmacon": "prod_01M0J89D44G96NFHKS9ADC48WF", "nota": "ZPHC Ztrop 80 UI (5 x 16 UI)" },
+    { "shapetotal": 3289, "bypharmacon": "prod_01M0J89D4WGFSQAZZ1TD72FRQ8", "nota": "ZPHC Ztrop 320 UI (10 x 32 UI)" }
+  ],
+  "rejeitar": [
+    { "shapetotal": 791, "bypharmacon": "prod_01M0J89CRD0D4GANKZY53910J4", "nota": "Muscle Sustan não é o Cut Stack" }
+  ]
+}

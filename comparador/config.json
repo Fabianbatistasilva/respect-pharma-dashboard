@@ -1,0 +1,15 @@
+{
+  "api_url": "https://shapetotal.com/api/catalogo",
+  "request_timeout_seconds": 30,
+  "database_path": "data/shapetotal.sqlite3",
+  "log_path": "data/comparador.log",
+  "whatsapp": {
+    "enabled": false
+  },
+  "comparador": {
+    "fetch_shape_directly": true,
+    "notify_bypharmacon_changes": false,
+    "database_path": "data/comparador.sqlite3",
+    "panel_path": "data/painel.html"
+  }
+}
