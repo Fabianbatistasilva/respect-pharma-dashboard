@@ -16,6 +16,7 @@ from comparador import (
     normalize_bypharmacon,
     open_database,
     price_changes,
+    prune_history,
     record_history,
 )
 
@@ -183,6 +184,25 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("ESGOTOU", summaries[1])
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM historico").fetchone()[0], 2)
         self.assertEqual(price_changes(connection)[0]["depois"], 12)
+
+
+    def test_prune_keeps_recent_rows_and_current_price_of_each_product(self):
+        connection = open_database(Path(":memory:"))
+        rows = [
+            (BYP, "a", "Produto A", 10, 1, "2020-01-01T00:00:00+00:00"),
+            (BYP, "a", "Produto A", 11, 1, "2020-02-01T00:00:00+00:00"),
+            (BYP, "b", "Produto B", 20, 1, "2020-01-01T00:00:00+00:00"),
+            (BYP, "b", "Produto B", 21, 1, "2999-01-01T00:00:00+00:00"),
+        ]
+        connection.executemany(
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em) VALUES(?, ?, ?, ?, ?, ?)", rows
+        )
+
+        removed = prune_history(connection, 90)
+
+        remaining = [tuple(row) for row in connection.execute("SELECT produto_id, preco FROM historico ORDER BY id")]
+        self.assertEqual(removed, 2)
+        self.assertEqual(remaining, [("a", 11.0), ("b", 21.0)])
 
 
 if __name__ == "__main__":

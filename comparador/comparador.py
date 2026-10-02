@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import urllib.request
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from monitor import (
     resolve_path,
     send_whatsapp,
     setup_logging,
+    utc_now,
 )
 
 
@@ -49,6 +50,8 @@ DEFAULTS = {
     "panel_path": "data/painel.html",
     "matches_path": "correspondencias.json",
     "min_score": 0.62,
+    # Dias de histórico de preços guardados no banco; o que for mais antigo é apagado.
+    "history_days": 90,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
     "atacado_category": "farma",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
@@ -723,6 +726,21 @@ def record_history(connection: sqlite3.Connection, store: str, items: list[dict[
     return summaries
 
 
+def prune_history(connection: sqlite3.Connection, days: int) -> int:
+    """Apaga o histórico mais antigo que `days` dias.
+
+    A última linha de cada produto fica mesmo sendo antiga: ela é o preço vigente,
+    de onde parte o gráfico e contra o qual a próxima coleta é comparada.
+    """
+    cutoff = (utc_now() - timedelta(days=days)).isoformat(timespec="seconds")
+    cursor = connection.execute(
+        "DELETE FROM historico WHERE visto_em < ? AND id NOT IN "
+        "(SELECT MAX(id) FROM historico GROUP BY loja, produto_id)",
+        (cutoff,),
+    )
+    return cursor.rowcount
+
+
 def price_changes(connection: sqlite3.Connection, limit: int = 300) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
@@ -871,6 +889,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         changes = record_history(connection, store, items_by_store[store])
         if store != SHAPE:
             summaries.extend(changes)
+    pruned = prune_history(connection, integer(settings["history_days"], 90))
     notify = settings.get("notify_bypharmacon_changes", settings["notify_changes"])
     if send_alerts and notify:
         connection.executemany("INSERT INTO alertas_pendentes(resumo) VALUES(?)", [(text,) for text in summaries])
@@ -886,10 +905,11 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     for error in errors:
         logger.error("Comparador: %s", error)
     logger.info(
-        "Comparador: %s; %s grupos comparáveis; %s alterações fora do Shape Total.",
+        "Comparador: %s; %s grupos comparáveis; %s alterações fora do Shape Total; %s linhas antigas apagadas do histórico.",
         ", ".join(f"{len(items_by_store[store])} {STORE_LABELS[store]}" for store in STORES),
         len(matches),
         len(summaries),
+        pruned,
     )
     if send_alerts:
         deliver_alerts(connection, config, logger, integer(settings["max_alert_items"], 30))

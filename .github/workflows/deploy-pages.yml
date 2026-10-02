@@ -10,7 +10,8 @@ on:
     - cron: '0 9,21 * * *'
 
 permissions:
-  contents: read
+  # write: o historico de precos e salvo no branch comparador-data.
+  contents: write
   pages: write
   id-token: write
 
@@ -53,14 +54,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      # O historico de precos do comparador vive no cache entre as execucoes.
+      # O historico de precos (SQLite, ultimos 90 dias) fica no branch comparador-data.
       - name: Restore price history
-        uses: actions/cache@v4
-        with:
-          path: comparador/data/comparador.sqlite3
-          key: comparador-history-${{ github.run_id }}
-          restore-keys: |
-            comparador-history-
+        id: history
+        run: |
+          mkdir -p comparador/data
+          status=0
+          git ls-remote --exit-code --heads origin comparador-data > /dev/null || status=$?
+          if [ "$status" = 0 ]; then
+            git fetch --depth=1 origin comparador-data
+            git show FETCH_HEAD:comparador.sqlite3 > comparador/data/comparador.sqlite3
+          elif [ "$status" = 2 ]; then
+            echo "::notice::Branch comparador-data ainda nao existe; historico comeca do zero."
+          else
+            exit "$status"
+          fi
 
       - name: Run comparador tests
         working-directory: comparador
@@ -70,6 +78,20 @@ jobs:
       - name: Build store comparison panel
         working-directory: comparador
         run: python comparador.py --config config.json --sem-alertas || echo "::warning::Comparador terminou com coleta incompleta"
+
+      # Um unico commit, sempre substituido: o branch guarda so a versao atual do banco.
+      - name: Save price history
+        if: steps.history.outcome == 'success'
+        run: |
+          snapshot="$(mktemp -d)"
+          cp comparador/data/comparador.sqlite3 "$snapshot/"
+          cd "$snapshot"
+          git init -q -b comparador-data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add comparador.sqlite3
+          git commit -q -m "Price history snapshot"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" comparador-data
 
       - name: Build static Pages artifact
         run: npm run publish:site
