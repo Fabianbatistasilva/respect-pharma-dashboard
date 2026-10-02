@@ -366,7 +366,11 @@ function degraus(min, max) {
   const bruto = (max - min) / 4, base = Math.pow(10, Math.floor(Math.log10(bruto)));
   const passo = [1, 2, 2.5, 5, 10].map((m) => m * base).find((p) => p >= bruto);
   const ticks = [];
-  for (let v = Math.floor(min / passo) * passo; v <= max + passo * 0.001; v += passo) ticks.push(Math.round(v * 100) / 100);
+  // O último degrau fica sempre acima do maior valor, para a linha nunca sair do gráfico.
+  for (let v = Math.floor(min / passo) * passo; ; v += passo) {
+    ticks.push(Math.round(v * 100) / 100);
+    if (v >= max) break;
+  }
   return ticks;
 }
 
@@ -393,7 +397,9 @@ function desenharHistorico() {
   const ticks = degraus(Math.max(0, min - folga), max + folga);
   min = ticks[0]; max = ticks[ticks.length - 1];
 
-  const W = 760, H = 300, M = {l: 74, r: 18, t: 12, b: 28};
+  // O desenho usa a largura real da janela, para o texto não encolher no celular.
+  const W = Math.max(320, Math.min(760, $('h-grafico').clientWidth || 760)), H = W < 500 ? 240 : 300;
+  const M = {l: 74, r: 18, t: 12, b: 28}, marcas = W < 500 ? 2 : 4;
   const x = (t) => M.l + (t - t0) / (t1 - t0) * (W - M.l - M.r);
   const y = (v) => H - M.b - (v - min) / (max - min) * (H - M.t - M.b);
   const NS = 'http://www.w3.org/2000/svg';
@@ -409,9 +415,9 @@ function desenharHistorico() {
     svg.append(el('line', {class: 'grade', x1: M.l, x2: W - M.r, y1: y(v), y2: y(v)}));
     svg.append(el('text', {x: M.l - 8, y: y(v) + 4, 'text-anchor': 'end'}, usd(v)));
   });
-  for (let i = 0; i <= 4; i++) {
-    const t = t0 + (t1 - t0) * i / 4;
-    svg.append(el('text', {x: x(t), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}, data(t, t1 - t0 < 4 * DIA)));
+  for (let i = 0; i <= marcas; i++) {
+    const t = t0 + (t1 - t0) * i / marcas;
+    svg.append(el('text', {x: x(t), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === marcas ? 'end' : 'middle'}, data(t, t1 - t0 < 4 * DIA)));
   }
   const mira = el('line', {class: 'mira', y1: M.t, y2: H - M.b, visibility: 'hidden'});
   svg.append(mira);
