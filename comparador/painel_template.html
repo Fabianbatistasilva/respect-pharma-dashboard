@@ -55,6 +55,34 @@
   .loja { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
   .nome + .nome { margin-top: 4px; }
   a { color: var(--accent); }
+
+  /* Gráfico de evolução: uma cor fixa por loja (paleta validada para daltonismo). */
+  :root { --serie-shapetotal: #2a78d6; --serie-bypharmacon: #eb6834; --serie-atacadoparaguai: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --serie-shapetotal: #3987e5; --serie-bypharmacon: #d95926; --serie-atacadoparaguai: #199e70; }
+  }
+  button.link { background: none; border: 0; padding: 0; margin-top: 4px; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline; }
+  dialog { width: min(820px, calc(100vw - 24px)); border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--surface); color: var(--ink); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  .h-topo { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  .h-topo h2 { font-size: 16px; margin: 0 0 2px; }
+  .h-topo button { font: inherit; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; color: var(--ink); cursor: pointer; }
+  .h-controles { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0 6px; }
+  .legenda { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .legenda span { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; }
+  .legenda b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .chave { display: inline-block; width: 16px; height: 2px; border-radius: 1px; }
+  .grafico { position: relative; }
+  .grafico svg { display: block; width: 100%; height: auto; outline-offset: 2px; }
+  .grafico text { font-size: 11px; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .grade { stroke: var(--line); stroke-width: 1; }
+  .mira { stroke: var(--ink-3); stroke-width: 1; }
+  .dica { position: absolute; top: 4px; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, .12); white-space: nowrap; }
+  .dica div { display: flex; align-items: center; gap: 6px; }
+  .dica b { font-variant-numeric: tabular-nums; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--ink-2); }
+  details .wrap { margin-top: 8px; max-height: 220px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -127,6 +155,29 @@
   </section>
 </main>
 
+<dialog id="hist">
+  <div class="h-topo">
+    <div><h2 id="h-titulo"></h2><div class="sub" id="h-sub"></div></div>
+    <button type="button" id="h-fechar">Fechar</button>
+  </div>
+  <div class="h-controles">
+    <select id="h-periodo" aria-label="Período">
+      <option value="7">Últimos 7 dias</option>
+      <option value="30">Últimos 30 dias</option>
+      <option value="90" selected>Últimos 90 dias</option>
+    </select>
+    <div class="legenda" id="h-legenda"></div>
+  </div>
+  <div class="grafico" id="h-grafico"></div>
+  <details>
+    <summary>Ver os registros em tabela</summary>
+    <div class="wrap"><table>
+      <thead><tr><th>Quando</th><th>Loja</th><th class="num">Preço (US$)</th><th>Estoque</th></tr></thead>
+      <tbody id="h-tabela"></tbody>
+    </table></div>
+  </details>
+</dialog>
+
 <script id="dados" type="application/json">__DADOS__</script>
 <script>
 const D = JSON.parse(document.getElementById('dados').textContent);
@@ -158,14 +209,14 @@ function preencher(id, opcoes) {
   $(id).insertAdjacentHTML('beforeend', opcoes.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join(''));
 }
 
-const grupos = D.grupos.map((grupo) => {
+const grupos = D.grupos.map((grupo, indice) => {
   const itens = LOJAS.filter((loja) => grupo.itens[loja]).map((loja) => grupo.itens[loja]);
   const valores = itens.map((p) => Math.round(valor(p) * 100) / 100).sort((a, b) => a - b);
   const menor = valores[0], maior = valores[valores.length - 1];
   const baratos = itens.filter((p) => Math.round(valor(p) * 100) / 100 === menor);
   const comMarca = itens.find((p) => p.marca) || itens[0];
   return {
-    ...grupo, lista: itens,
+    ...grupo, indice, lista: itens,
     abs: Math.round((maior - menor) * 100) / 100,
     pct: maior > 0 ? (maior - menor) / maior * 100 : 0,
     // Empate = as lojas mais baratas cobram exatamente o mesmo.
@@ -174,7 +225,7 @@ const grupos = D.grupos.map((grupo) => {
     texto: norm(itens.map((p) => [p.nome, p.marca, p.detalhe].join(' ')).join(' ')),
   };
 });
-const produtos = D.produtos.map((p) => ({...p, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe].join(' '))}));
+const produtos = D.produtos.map((p, indice) => ({...p, indice, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe].join(' '))}));
 const contar = (lista, campo) => lista.reduce((acc, item) => (acc[item[campo]] = (acc[item[campo]] || 0) + 1, acc), {});
 const opcoesMarca = (lista, campo) => Object.entries(contar(lista, campo))
   .map(([key, n]) => [key, `${marcaRotulo(key)} (${n})`]).sort((a, b) => a[1].localeCompare(b[1]));
@@ -244,7 +295,7 @@ function renderPares() {
     const nomes = grupo.lista.map((p) =>
       `<div class="nome" title="ID ${esc(D.lojas[p.loja])}: ${esc(p.id)}"><div class="loja">${esc(D.lojas[p.loja])}</div>${esc(p.nome)}</div>`).join('');
     return `<tr>
-      <td>${nomes}</td>
+      <td>${nomes}<button type="button" class="link" data-grupo="${grupo.indice}">Ver evolução do preço</button></td>
       <td>${esc(grupo.marcaNome)}</td>
       ${LOJAS.map((loja) => priceCell(grupo.itens[loja], grupo.vencedor === loja)).join('')}
       <td class="num">${grupo.abs ? dinheiro(grupo.abs) + '<div class="sub">' + grupo.pct.toFixed(1).replace('.', ',') + '%</div>' : '—'}</td>
@@ -264,7 +315,7 @@ function renderProdutos() {
     : order === 'asc' ? (a, b) => valor(a) - valor(b) : (a, b) => valor(b) - valor(a));
   $('t-contagem').textContent = rows.length + ' produtos' + (rows.length > LIMITE ? ` (mostrando os primeiros ${LIMITE}; refine a busca)` : '');
   $('t-corpo').innerHTML = rows.slice(0, LIMITE).map((p) => `<tr>
-      <td><div title="ID: ${esc(p.id)}">${esc(p.nome)}</div>${p.detalhe ? `<div class="sub">${esc(p.detalhe)}</div>` : ''}</td>
+      <td><div title="ID: ${esc(p.id)}">${esc(p.nome)}</div>${p.detalhe ? `<div class="sub">${esc(p.detalhe)}</div>` : ''}<button type="button" class="link" data-produto="${p.indice}">Ver evolução do preço</button></td>
       <td>${esc(p.marca)}</td><td>${esc(p.categoria)}</td>
       <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(D.lojas[p.loja])}</a></td>
       <td class="num"><span class="price">${dinheiro(valor(p))}</span>${p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : ''}${temReais ? `<div class="sub">${usd(p.preco)}</div>` : ''}</td>
@@ -292,6 +343,156 @@ document.querySelectorAll('.tabs button').forEach((button) => button.addEventLis
 ['p-busca', 'p-marca', 'p-vencedor', 'p-lojas', 'p-ordem', 'p-estoque', 'p-baixa'].forEach((id) => $(id).addEventListener('input', renderPares));
 ['t-busca', 't-marca', 't-categoria', 't-loja', 't-ordem', 't-estoque'].forEach((id) => $(id).addEventListener('input', renderProdutos));
 renderPares(); renderProdutos(); renderMudancas();
+
+// ---- Gráfico de evolução de preço (em dólar, o preço que a loja altera) ----
+const AGORA = Math.floor(new Date(D.gerado_em).getTime() / 1000);
+const DIA = 86400;
+const corSerie = (loja) => `var(--serie-${loja})`;
+const data = (segundos, comHora) => new Date(segundos * 1000).toLocaleString('pt-BR',
+  comHora ? {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'} : {day: '2-digit', month: '2-digit'});
+let histItens = [];
+
+function pontosDe(p) {
+  const pontos = ((D.historico[p.loja] || {})[p.id] || []).slice();
+  return pontos.length ? pontos : [[AGORA, p.preco, p.disponivel ? 1 : 0]];
+}
+// Preço é uma escada: vale o último registro até o próximo.
+function valorEm(pontos, t) {
+  let atual = null;
+  for (const ponto of pontos) { if (ponto[0] <= t) atual = ponto; else break; }
+  return atual;
+}
+function degraus(min, max) {
+  const bruto = (max - min) / 4, base = Math.pow(10, Math.floor(Math.log10(bruto)));
+  const passo = [1, 2, 2.5, 5, 10].map((m) => m * base).find((p) => p >= bruto);
+  const ticks = [];
+  for (let v = Math.floor(min / passo) * passo; v <= max + passo * 0.001; v += passo) ticks.push(Math.round(v * 100) / 100);
+  return ticks;
+}
+
+function abrirHistorico(itens, titulo) {
+  histItens = itens;
+  $('h-titulo').textContent = titulo;
+  $('hist').showModal();
+  desenharHistorico();
+}
+
+function desenharHistorico() {
+  const series = histItens.map((p) => ({p, pontos: pontosDe(p)}));
+  const primeiro = Math.min(...series.map((s) => s.pontos[0][0]));
+  const dias = Number($('h-periodo').value);
+  const t1 = AGORA, t0 = Math.min(Math.max(primeiro, t1 - dias * DIA), t1 - DIA);
+  $('h-sub').textContent = `Preço em dólar · acompanhado desde ${data(primeiro, true)} · o histórico guarda até 90 dias`;
+
+  const visiveis = series.flatMap((s) => {
+    const inicial = valorEm(s.pontos, t0);
+    return (inicial ? [inicial[1]] : []).concat(s.pontos.filter((ponto) => ponto[0] > t0).map((ponto) => ponto[1]));
+  });
+  let min = Math.min(...visiveis), max = Math.max(...visiveis);
+  const folga = Math.max((max - min) * 0.15, max * 0.05, 0.5);
+  const ticks = degraus(Math.max(0, min - folga), max + folga);
+  min = ticks[0]; max = ticks[ticks.length - 1];
+
+  const W = 760, H = 300, M = {l: 74, r: 18, t: 12, b: 28};
+  const x = (t) => M.l + (t - t0) / (t1 - t0) * (W - M.l - M.r);
+  const y = (v) => H - M.b - (v - min) / (max - min) * (H - M.t - M.b);
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (nome, attrs, texto) => {
+    const node = document.createElementNS(NS, nome);
+    Object.entries(attrs).forEach(([k, v]) => node.setAttribute(k, v));
+    if (texto != null) node.textContent = texto;
+    return node;
+  };
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', tabindex: 0,
+    'aria-label': 'Evolução do preço por loja. Use as setas para percorrer as datas.'});
+  ticks.forEach((v) => {
+    svg.append(el('line', {class: 'grade', x1: M.l, x2: W - M.r, y1: y(v), y2: y(v)}));
+    svg.append(el('text', {x: M.l - 8, y: y(v) + 4, 'text-anchor': 'end'}, usd(v)));
+  });
+  for (let i = 0; i <= 4; i++) {
+    const t = t0 + (t1 - t0) * i / 4;
+    svg.append(el('text', {x: x(t), y: H - 8, 'text-anchor': i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}, data(t, t1 - t0 < 4 * DIA)));
+  }
+  const mira = el('line', {class: 'mira', y1: M.t, y2: H - M.b, visibility: 'hidden'});
+  svg.append(mira);
+  series.forEach((s) => {
+    const inicial = valorEm(s.pontos, t0);
+    const resto = s.pontos.filter((ponto) => ponto[0] > t0);
+    const comeco = inicial ? [t0, inicial[1]] : [resto[0][0], resto[0][1]];
+    let d = `M${x(comeco[0])},${y(comeco[1])}`;
+    resto.forEach((ponto) => { d += ` H${x(ponto[0])} V${y(ponto[1])}`; });
+    d += ` H${x(t1)}`;
+    const ultimo = s.pontos[s.pontos.length - 1][1];
+    svg.append(el('path', {d, fill: 'none', stroke: corSerie(s.p.loja), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
+    svg.append(el('circle', {cx: x(t1), cy: y(ultimo), r: 4, fill: corSerie(s.p.loja), stroke: 'var(--surface)', 'stroke-width': 2}));
+  });
+
+  const dica = document.createElement('div');
+  dica.className = 'dica hidden';
+  function mostrar(t) {
+    t = Math.min(t1, Math.max(t0, t));
+    mira.setAttribute('x1', x(t)); mira.setAttribute('x2', x(t)); mira.setAttribute('visibility', 'visible');
+    dica.replaceChildren();
+    const cabecalho = document.createElement('div');
+    cabecalho.className = 'sub'; cabecalho.textContent = data(t, true);
+    dica.append(cabecalho);
+    series.forEach((s) => {
+      const ponto = valorEm(s.pontos, t);
+      const linha = document.createElement('div'), chave = document.createElement('span'), valorTexto = document.createElement('b'), nome = document.createElement('span');
+      chave.className = 'chave'; chave.style.background = corSerie(s.p.loja);
+      valorTexto.textContent = ponto ? usd(ponto[1]) : '—';
+      nome.className = 'sub'; nome.textContent = D.lojas[s.p.loja] + (ponto && !ponto[2] ? ' (sem estoque)' : '');
+      linha.append(chave, valorTexto, nome);
+      dica.append(linha);
+    });
+    dica.classList.remove('hidden');
+    const fracao = (x(t) - M.l) / (W - M.l - M.r), largura = svg.getBoundingClientRect().width;
+    dica.style.left = fracao < 0.55 ? `${x(t) / W * largura + 12}px` : '';
+    dica.style.right = fracao < 0.55 ? '' : `${largura - x(t) / W * largura + 12}px`;
+    svg.dataset.t = t;
+  }
+  const esconder = () => { mira.setAttribute('visibility', 'hidden'); dica.classList.add('hidden'); };
+  svg.addEventListener('pointermove', (event) => {
+    const caixa = svg.getBoundingClientRect();
+    mostrar(t0 + ((event.clientX - caixa.left) / caixa.width * W - M.l) / (W - M.l - M.r) * (t1 - t0));
+  });
+  svg.addEventListener('pointerleave', esconder);
+  svg.addEventListener('blur', esconder);
+  svg.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const passo = (t1 - t0) / 60 * (event.key === 'ArrowLeft' ? -1 : 1);
+    mostrar(Number(svg.dataset.t || t1) + passo);
+  });
+  $('h-grafico').replaceChildren(svg, dica);
+
+  $('h-legenda').replaceChildren(...series.map((s) => {
+    const item = document.createElement('span'), chave = document.createElement('span'), valorTexto = document.createElement('b');
+    chave.className = 'chave'; chave.style.background = corSerie(s.p.loja);
+    valorTexto.textContent = usd(s.pontos[s.pontos.length - 1][1]);
+    item.append(chave, document.createTextNode(D.lojas[s.p.loja]), valorTexto);
+    return item;
+  }));
+  const registros = series.flatMap((s) => s.pontos.map((ponto) => ({loja: s.p.loja, ponto}))).sort((a, b) => b.ponto[0] - a.ponto[0]);
+  $('h-tabela').innerHTML = registros.map((r) => `<tr><td>${esc(data(r.ponto[0], true))}</td><td>${esc(D.lojas[r.loja])}</td>
+    <td class="num">${usd(r.ponto[1])}</td><td>${r.ponto[2] ? 'em estoque' : 'sem estoque'}</td></tr>`).join('');
+}
+
+$('h-periodo').addEventListener('input', desenharHistorico);
+$('h-fechar').addEventListener('click', () => $('hist').close());
+$('hist').addEventListener('click', (event) => { if (event.target === $('hist')) $('hist').close(); });
+$('p-corpo').addEventListener('click', (event) => {
+  const botao = event.target.closest('button[data-grupo]');
+  if (!botao) return;
+  const grupo = grupos[Number(botao.dataset.grupo)];
+  abrirHistorico(grupo.lista, grupo.lista[0].nome);
+});
+$('t-corpo').addEventListener('click', (event) => {
+  const botao = event.target.closest('button[data-produto]');
+  if (!botao) return;
+  const p = produtos[Number(botao.dataset.produto)];
+  abrirHistorico([p], `${p.nome} · ${D.lojas[p.loja]}`);
+});
 </script>
 </body>
 </html>

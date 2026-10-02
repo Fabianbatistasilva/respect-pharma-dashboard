@@ -761,6 +761,17 @@ def price_changes(connection: sqlite3.Connection, limit: int = 300) -> list[dict
     ]
 
 
+def history_series(connection: sqlite3.Connection) -> dict[str, dict[str, list[list[Any]]]]:
+    """Histórico de cada produto para o gráfico: {loja: {id: [[segundos, preço, disponível], ...]}}."""
+    series: dict[str, dict[str, list[list[Any]]]] = {}
+    for row in connection.execute("SELECT loja, produto_id, preco, disponivel, visto_em FROM historico ORDER BY id"):
+        seen_at = int(datetime.fromisoformat(row["visto_em"]).timestamp())
+        series.setdefault(row["loja"], {}).setdefault(row["produto_id"], []).append(
+            [seen_at, row["preco"], row["disponivel"]]
+        )
+    return series
+
+
 def deliver_alerts(
     connection: sqlite3.Connection,
     config: dict[str, Any],
@@ -804,6 +815,7 @@ def build_panel_data(
     changes: list[dict[str, Any]],
     errors: list[str],
     rates: dict[str, float],
+    history: dict[str, dict[str, list[list[Any]]]],
 ) -> dict[str, Any]:
     return {
         "gerado_em": iso_now(),
@@ -821,6 +833,7 @@ def build_panel_data(
         ],
         "produtos": [public_item(item) for store in STORES for item in items_by_store[store]],
         "mudancas": changes,
+        "historico": history,
     }
 
 
@@ -897,7 +910,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))
     matches = match_products(items_by_store, confirmed, rejected, number(settings["min_score"], 0.62))
-    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates)
+    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates, history_series(connection))
     panel_path = resolve_path(config_path, settings["panel_path"])
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     panel_path.write_text(render_panel(data), encoding="utf-8")

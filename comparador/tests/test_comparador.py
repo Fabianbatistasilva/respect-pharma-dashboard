@@ -10,6 +10,7 @@ from comparador import (
     BYP,
     SHAPE,
     features,
+    history_series,
     match_products,
     match_score,
     normalize_atacado,
@@ -184,6 +185,8 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("ESGOTOU", summaries[1])
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM historico").fetchone()[0], 2)
         self.assertEqual(price_changes(connection)[0]["depois"], 12)
+        points = history_series(connection)[BYP]["a"]
+        self.assertEqual([point[1:] for point in points], [[10, 1], [12, 0]])
 
 
     def test_prune_keeps_recent_rows_and_current_price_of_each_product(self):
