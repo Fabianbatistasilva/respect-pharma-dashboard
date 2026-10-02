@@ -678,7 +678,8 @@ def open_database(path: Path) -> sqlite3.Connection:
             nome TEXT NOT NULL,
             preco REAL NOT NULL,
             disponivel INTEGER NOT NULL,
-            visto_em TEXT NOT NULL
+            visto_em TEXT NOT NULL,
+            removido INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_historico_produto ON historico(loja, produto_id, id);
         CREATE TABLE IF NOT EXISTS alertas_pendentes (
@@ -687,6 +688,9 @@ def open_database(path: Path) -> sqlite3.Connection:
         );
         """
     )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(historico)")}
+    if "removido" not in columns:
+        connection.execute("ALTER TABLE historico ADD COLUMN removido INTEGER NOT NULL DEFAULT 0")
     return connection
 
 
@@ -700,14 +704,21 @@ def last_states(connection: sqlite3.Connection, store: str) -> dict[str, sqlite3
 
 
 def record_history(connection: sqlite3.Connection, store: str, items: list[dict[str, Any]]) -> list[str]:
-    """Grava uma linha só quando preço ou disponibilidade mudam; devolve o resumo das mudanças."""
+    """Grava uma linha quando preço ou disponibilidade mudam, ou o produto sai do catálogo; devolve o resumo."""
     previous = last_states(connection, store)
     seen_at = iso_now()
     summaries: list[str] = []
     label = STORE_LABELS[store]
     for item in items:
         before = previous.get(item["id"])
-        if before is not None and before["preco"] == item["preco"] and bool(before["disponivel"]) == item["disponivel"]:
+        was_removed = before is not None and bool(before["removido"])
+        unchanged = (
+            before is not None
+            and not was_removed
+            and before["preco"] == item["preco"]
+            and bool(before["disponivel"]) == item["disponivel"]
+        )
+        if unchanged:
             continue
         connection.execute(
             "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em) VALUES(?, ?, ?, ?, ?, ?)",
@@ -715,8 +726,9 @@ def record_history(connection: sqlite3.Connection, store: str, items: list[dict[
         )
         if not previous:
             continue
-        if before is None:
-            summaries.append(f"NOVO ({label}): {item['nome']} — {format_price(item['preco'])}")
+        if before is None or was_removed:
+            kind = "VOLTOU AO CATÁLOGO" if was_removed else "NOVO"
+            summaries.append(f"{kind} ({label}): {item['nome']} — {format_price(item['preco'])}")
             continue
         if before["preco"] != item["preco"]:
             summaries.append(
@@ -725,6 +737,19 @@ def record_history(connection: sqlite3.Connection, store: str, items: list[dict[
         if bool(before["disponivel"]) != item["disponivel"]:
             status = "VOLTOU" if item["disponivel"] else "ESGOTOU"
             summaries.append(f"{status} ({label}): {item['nome']}")
+
+    current_ids = {item["id"] for item in items}
+    active = [row for row in previous.values() if not row["removido"]]
+    gone = [row for row in active if row["produto_id"] not in current_ids]
+    # Muitos sumindo de uma vez é resposta incompleta da loja, não remoção: espera a próxima coleta.
+    if gone and len(gone) <= max(10, 0.3 * len(active)):
+        for row in gone:
+            connection.execute(
+                "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, removido) "
+                "VALUES(?, ?, ?, ?, 0, ?, 1)",
+                (store, row["produto_id"], row["nome"], row["preco"], seen_at),
+            )
+            summaries.append(f"REMOVIDO ({label}): {row['nome']}")
     return summaries
 
 
@@ -903,6 +928,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
     summaries: list[str] = []
     for store in STORES:
+        if not items_by_store[store]:
+            continue  # coleta falhou: sem lista, não dá para saber o que mudou ou foi removido
         changes = record_history(connection, store, items_by_store[store])
         if store != SHAPE:
             summaries.extend(changes)

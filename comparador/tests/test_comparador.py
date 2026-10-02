@@ -189,6 +189,23 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual([point[1:] for point in points], [[10, 1], [12, 0]])
 
 
+    def test_removed_product_is_reported_once_and_again_when_it_returns(self):
+        connection = open_database(Path(":memory:"))
+        both = [item(BYP, "a", "Produto A", "Marca"), item(BYP, "b", "Produto B", "Marca")]
+        only_a = both[:1]
+        record_history(connection, BYP, both)
+
+        self.assertEqual(record_history(connection, BYP, only_a), ["REMOVIDO (ByPharmacon): Produto B"])
+        self.assertEqual(record_history(connection, BYP, only_a), [])
+        self.assertEqual(record_history(connection, BYP, both), ["VOLTOU AO CATÁLOGO (ByPharmacon): Produto B — US$ 10.00"])
+
+    def test_mass_disappearance_is_not_treated_as_removal(self):
+        connection = open_database(Path(":memory:"))
+        full = [item(BYP, str(number), f"Produto {number}", "Marca") for number in range(40)]
+        record_history(connection, BYP, full)
+
+        self.assertEqual(record_history(connection, BYP, full[:5]), [])
+
     def test_prune_keeps_recent_rows_and_current_price_of_each_product(self):
         connection = open_database(Path(":memory:"))
         rows = [
