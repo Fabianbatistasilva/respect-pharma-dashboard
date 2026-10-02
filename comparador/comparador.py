@@ -237,7 +237,7 @@ def clean_number(value: float) -> str:
 
 
 # Grafias diferentes da mesma marca.
-BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan"}
+BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan", "musclepharm": "muscle"}
 
 
 def brand_key(brand: str) -> str:
@@ -918,6 +918,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     panel_path = resolve_path(config_path, settings["panel_path"])
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     panel_path.write_text(render_panel(data), encoding="utf-8")
+    # Os mesmos dados em JSON, para o bot de busca do WhatsApp.
+    panel_path.with_suffix(".json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
     for error in errors:
         logger.error("Comparador: %s", error)
