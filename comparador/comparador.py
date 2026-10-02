@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import html
+import itertools
 import json
 import logging
 import re
@@ -29,7 +31,10 @@ from monitor import (
 
 SHAPE = "shapetotal"
 BYP = "bypharmacon"
-STORE_LABELS = {SHAPE: "Shape Total", BYP: "ByPharmacon"}
+ATACADO = "atacadoparaguai"
+STORES = (SHAPE, BYP, ATACADO)
+STORE_LABELS = {SHAPE: "Shape Total", BYP: "ByPharmacon", ATACADO: "Atacado Paraguai"}
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ComparadorLocal/1.0 (+personal-use)"
 
 DEFAULTS = {
     "bypharmacon_api_url": "https://bypharmacon.com/api/catalog",
@@ -44,7 +49,12 @@ DEFAULTS = {
     "panel_path": "data/painel.html",
     "matches_path": "correspondencias.json",
     "min_score": 0.62,
-    "notify_bypharmacon_changes": True,
+    "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
+    "atacado_category": "farma",
+    # A cotação do dia aparece no cabeçalho de qualquer página da loja.
+    "atacado_rate_url": "https://atacadoparaguai.com.py/categoria-produto/farma/",
+    # Avisar no WhatsApp as mudanças do ByPharmacon e do Atacado Paraguai (o monitor já avisa as do Shape Total).
+    "notify_changes": True,
     "max_alert_items": 30,
 }
 
@@ -169,6 +179,36 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "ipa": ("ipamorelin",),
     "bremelanotida": ("pt141",),
     "kisspeptin": ("kisspeptina",),
+    "zptrop": ("ztrop",),
+    "metanolona": ("metenolona",),
+    "drostalona": ("drostanolona",),
+    "drostanolone": ("drostanolona",),
+    "propianate": ("propionato",),
+    "cypionato": ("cipionato",),
+    "undecylonato": ("undecilenato",),
+    "phenylpropionato": ("fenilpropionato",),
+    "dynabolan": ("nandrolona", "fenilpropionato"),
+    "dynabolon": ("nandrolona", "fenilpropionato"),
+    "decaprime": ("nandrolona", "decanoato"),
+    "durabolin": ("nandrolona", "decanoato"),
+    "decadurabolin": ("nandrolona", "decanoato"),
+    "drostoprime": ("drostanolona",),
+    "mastogen": ("drostanolona", "propionato"),
+    "enaprime": ("testosterona", "enantato"),
+    "proprime": ("testosterona", "propionato"),
+    "texagen": ("testosterona", "cipionato"),
+    "testex": ("testosterona", "cipionato"),
+    "testosterone": ("testosterona",),
+    "tetosterona": ("testosterona",),
+    "parabolan": ("trembolona",),
+    "trembo": ("trembolona",),
+    "trembolone": ("trembolona",),
+    "bolboliic": ("boldenona",),
+    "dihydroboldenone": ("dihydroboldenona",),
+    "epithalon": ("epitalon",),
+    "ephitalon": ("epitalon",),
+    "roacotan": ("roacutan",),
+    "tirzepen": ("tirzepatida",),
 }
 
 STOPWORDS = {
@@ -179,6 +219,7 @@ STOPWORDS = {
     "healthcare", "health", "pharma", "farma", "accion", "prolongada", "inyectable",
     "caneta", "pen", "diluido", "liquido", "aquoso", "po", "polvo", "liofilizado",
     "sales", "tri", "deposteron", "somatropina",
+    "agua", "without", "no", "dac", "glp1", "pack", "capsule", "tablets", "xt",
 }
 
 
@@ -190,9 +231,13 @@ def clean_number(value: float) -> str:
     return f"{value:g}"
 
 
+# Grafias diferentes da mesma marca.
+BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan"}
+
+
 def brand_key(brand: str) -> str:
     words = re.findall(r"[a-z0-9]+", normalize_text(brand))
-    return words[0] if words else ""
+    return BRAND_ALIASES.get(words[0], words[0]) if words else ""
 
 
 def features(item: dict[str, Any]) -> dict[str, Any]:
@@ -269,8 +314,11 @@ def features(item: dict[str, Any]) -> dict[str, Any]:
             continue
         tokens.update(SYNONYMS.get(word, (word,)))
 
+    # A marca cadastrada nem sempre é confiável; a primeira palavra do nome costuma ser a marca.
+    brands = {brand_key(item.get("marca", "")), brand_key(item["nome"])} - {""}
+
     return {
-        "brand": brand_key(item.get("marca", "")),
+        "brands": brands,
         "name_words": words,
         "tokens": tokens,
         "doses": doses,
@@ -282,9 +330,7 @@ def features(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def brands_compatible(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    if not a["brand"] or not b["brand"]:
-        return True
-    return a["brand"] == b["brand"] or a["brand"] in b["name_words"] or b["brand"] in a["name_words"]
+    return bool(a["brands"] & b["brands"] or a["brands"] & b["name_words"] or b["brands"] & a["name_words"])
 
 
 def match_score(a: dict[str, Any], b: dict[str, Any]) -> float:
@@ -302,6 +348,9 @@ def match_score(a: dict[str, Any], b: dict[str, Any]) -> float:
         return 0.0
     if a["form"] and b["form"] and a["form"] != b["form"]:
         return 0.0
+    # Caneta sempre vem escrita no nome: se só um lado diz "caneta", o outro é frasco.
+    if (a["form"] == "caneta") != (b["form"] == "caneta"):
+        return 0.0
     if a["pack"] and b["pack"] and a["pack"] != b["pack"]:
         return 0.0
 
@@ -315,68 +364,108 @@ def match_score(a: dict[str, Any], b: dict[str, Any]) -> float:
     return round(0.7 * names + 0.3 * dose, 3)
 
 
-def load_matches(path: Path) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+Key = tuple[str, str]  # (loja, id do produto)
+
+
+def load_matches(path: Path) -> tuple[list[list[Key]], set[frozenset[Key]]]:
+    """Lê as correções manuais: grupos a forçar e pares a nunca juntar."""
     if not path.exists():
-        return set(), set()
+        return [], set()
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
 
-    def pairs(key: str) -> set[tuple[str, str]]:
-        return {(str(entry[SHAPE]), str(entry[BYP])) for entry in data.get(key, [])}
+    def keys(entry: dict[str, Any]) -> list[Key]:
+        return [(store, str(entry[store])) for store in STORES if store in entry]
 
-    return pairs("confirmar"), pairs("rejeitar")
+    confirmed = [keys(entry) for entry in data.get("confirmar", [])]
+    rejected = {
+        frozenset(pair)
+        for entry in data.get("rejeitar", [])
+        for pair in itertools.combinations(keys(entry), 2)
+    }
+    return confirmed, rejected
 
 
 def match_products(
-    shape_items: list[dict[str, Any]],
-    byp_items: list[dict[str, Any]],
-    confirmed: set[tuple[str, str]],
-    rejected: set[tuple[str, str]],
+    items_by_store: dict[str, list[dict[str, Any]]],
+    confirmed: list[list[Key]],
+    rejected: set[frozenset[Key]],
     min_score: float,
 ) -> list[dict[str, Any]]:
-    shape_by_id = {item["id"]: item for item in shape_items}
-    byp_by_id = {item["id"]: item for item in byp_items}
-    used_shape: set[str] = set()
-    used_byp: set[str] = set()
-    matches: list[dict[str, Any]] = []
+    """Agrupa o mesmo produto entre as lojas; cada grupo tem no máximo um item por loja."""
+    items: dict[Key, dict[str, Any]] = {
+        (store, item["id"]): item for store, store_items in items_by_store.items() for item in store_items
+    }
+    item_features = {key: features(item) for key, item in items.items()}
+    groups: dict[Key, list[Key]] = {key: [key] for key in items}  # raiz -> membros
+    root: dict[Key, Key] = {key: key for key in items}
+    link_scores: dict[Key, list[float]] = {key: [] for key in items}
+    manual: set[Key] = set()
 
-    for shape_id, byp_id in sorted(confirmed):
-        if shape_id in shape_by_id and byp_id in byp_by_id:
-            matches.append({SHAPE: shape_by_id[shape_id], BYP: byp_by_id[byp_id], "score": 1.0, "confianca": "confirmada"})
-            used_shape.add(shape_id)
-            used_byp.add(byp_id)
+    def merge(a: Key, b: Key, score: float) -> None:
+        keep, drop = root[a], root[b]
+        for member in groups[drop]:
+            root[member] = keep
+        groups[keep].extend(groups.pop(drop))
+        link_scores[keep].extend(link_scores.pop(drop) + [score])
 
-    shape_features = {item["id"]: features(item) for item in shape_items}
-    byp_features = {item["id"]: features(item) for item in byp_items}
-    candidates = []
-    for byp_id, byp_feature in byp_features.items():
-        for shape_id, shape_feature in shape_features.items():
-            if (shape_id, byp_id) in rejected:
-                continue
-            score = match_score(shape_feature, byp_feature)
-            if score >= min_score:
-                candidates.append((score, shape_id, byp_id))
+    for entry in confirmed:
+        present = [key for key in entry if key in items]
+        for other in present[1:]:
+            if root[present[0]] != root[other]:
+                merge(present[0], other, 1.0)
+        if len(present) > 1:
+            manual.add(root[present[0]])
+    manual = {root[key] for key in manual}
+
+    scores: dict[frozenset[Key], float] = {}
+    for store_a, store_b in itertools.combinations(items_by_store, 2):
+        for item_a in items_by_store[store_a]:
+            key_a = (store_a, item_a["id"])
+            for item_b in items_by_store[store_b]:
+                key_b = (store_b, item_b["id"])
+                pair = frozenset((key_a, key_b))
+                if pair not in rejected:
+                    scores[pair] = match_score(item_features[key_a], item_features[key_b])
 
     # Um par só vale se for (quase) a melhor opção dos dois lados; evita casar sobras.
-    best_shape: dict[str, float] = {}
-    best_byp: dict[str, float] = {}
-    for score, shape_id, byp_id in candidates:
-        best_shape[shape_id] = max(score, best_shape.get(shape_id, 0))
-        best_byp[byp_id] = max(score, best_byp.get(byp_id, 0))
+    best: dict[tuple[Key, str], float] = {}
+    candidates = []
+    for pair, score in scores.items():
+        if score < min_score:
+            continue
+        key_a, key_b = sorted(pair)
+        candidates.append((score, key_a, key_b))
+        best[(key_a, key_b[0])] = max(score, best.get((key_a, key_b[0]), 0))
+        best[(key_b, key_a[0])] = max(score, best.get((key_b, key_a[0]), 0))
 
-    for score, shape_id, byp_id in sorted(candidates, key=lambda entry: (-entry[0], entry[1], entry[2])):
-        if shape_id in used_shape or byp_id in used_byp:
+    automatic: set[Key] = set()
+    for score, key_a, key_b in sorted(candidates, key=lambda entry: (-entry[0], entry[1], entry[2])):
+        if score < best[(key_a, key_b[0])] - BEST_MARGIN or score < best[(key_b, key_a[0])] - BEST_MARGIN:
             continue
-        if score < best_shape[shape_id] - BEST_MARGIN or score < best_byp[byp_id] - BEST_MARGIN:
+        group_a, group_b = groups[root[key_a]], groups[root[key_b]]
+        if root[key_a] == root[key_b] or {key[0] for key in group_a} & {key[0] for key in group_b}:
             continue
-        used_shape.add(shape_id)
-        used_byp.add(byp_id)
-        prices = sorted([shape_by_id[shape_id]["preco"], byp_by_id[byp_id]["preco"]])
-        if prices[0] <= 0 or prices[1] / prices[0] > SUSPICIOUS_PRICE_RATIO:
+        # A ligação A-B não pode arrastar um C incompatível com A (dose ou embalagem diferente).
+        if any(scores.get(frozenset((one, other)), 0) <= 0 for one in group_a for other in group_b):
+            continue
+        merge(key_a, key_b, score)
+        automatic.add(root[key_a])
+    automatic = {root[key] for key in automatic}
+
+    matches = []
+    for group_root, members in groups.items():
+        if len(members) < 2:
+            continue
+        score = min(link_scores[group_root])
+        prices = sorted(items[key]["preco"] for key in members)
+        if group_root in manual and group_root not in automatic:
+            confidence = "confirmada"
+        elif prices[0] <= 0 or prices[-1] / prices[0] > SUSPICIOUS_PRICE_RATIO:
             confidence = "baixa"
         else:
             confidence = "alta" if score >= 0.85 else "media"
-        matches.append({SHAPE: shape_by_id[shape_id], BYP: byp_by_id[byp_id], "score": score, "confianca": confidence})
+        matches.append({"itens": {key[0]: items[key] for key in members}, "score": score, "confianca": confidence})
     return matches
 
 
@@ -475,7 +564,7 @@ def normalize_bypharmacon(product: dict[str, Any]) -> dict[str, Any]:
 def fetch_bypharmacon(url: str, timeout: int) -> list[dict[str, Any]]:
     request = urllib.request.Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0 ComparadorLocal/1.0 (+personal-use)"},
+        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = json.load(response)
@@ -486,6 +575,72 @@ def fetch_bypharmacon(url: str, timeout: int) -> list[dict[str, Any]]:
     if len(items) < 30:
         raise ValueError(f"Catálogo do ByPharmacon suspeito: somente {len(items)} produtos.")
     return items
+
+
+def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
+    prices = product.get("prices") or {}
+    divisor = 10 ** integer(prices.get("currency_minor_unit"), 2)
+    price = number(prices.get("price")) / divisor
+    regular = number(prices.get("regular_price")) / divisor
+    brands = product.get("brands") or []
+    categories = [str(category.get("name") or "") for category in product.get("categories") or []]
+    in_stock = bool(product.get("is_in_stock"))
+    return {
+        "loja": ATACADO,
+        "id": str(product.get("id") or ""),
+        "nome": html.unescape(str(product.get("name") or "")).replace("–", "-").strip(),
+        "marca": html.unescape(str(brands[0].get("name") or "")).strip() if brands else "",
+        "categoria": "Estética" if "Estética" in categories else "Farma",
+        "detalhe": "",
+        "apresentacao": "",
+        "quantidade": "",
+        "dose": "",
+        "preco": price,
+        "preco_original": regular if regular > price else None,
+        "atacado": [],
+        # A loja informa só se há estoque, não a quantidade.
+        "estoque": None,
+        "estoque_detalhe": "",
+        "disponivel": in_stock,
+        "url": str(product.get("permalink") or "https://atacadoparaguai.com.py/categoria-produto/farma/"),
+        "moeda": str(prices.get("currency_code") or ""),
+    }
+
+
+def fetch_atacado(url: str, category: str, timeout: int) -> list[dict[str, Any]]:
+    """Baixa a categoria inteira; a "rolagem infinita" do site é esta mesma lista, página a página."""
+    products: list[dict[str, Any]] = []
+    page, total_pages = 1, 1
+    while page <= min(total_pages, 30):
+        request = urllib.request.Request(
+            f"{url}?category={category}&per_page=100&page={page}",
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            total_pages = integer(response.headers.get("X-WP-TotalPages"), 1)
+            payload = json.load(response)
+        if not isinstance(payload, list):
+            raise ValueError("Resposta do Atacado Paraguai não é uma lista de produtos.")
+        products.extend(payload)
+        page += 1
+
+    items = {item["id"]: item for item in map(normalize_atacado, products) if item["id"] and item["nome"]}
+    if any(item.pop("moeda") != "USD" for item in items.values()):
+        raise ValueError("Atacado Paraguai deixou de informar os preços em dólar.")
+    if len(items) < 20:
+        raise ValueError(f"Catálogo do Atacado Paraguai suspeito: somente {len(items)} produtos.")
+    return list(items.values())
+
+
+def fetch_atacado_rate(url: str, timeout: int) -> float:
+    request = urllib.request.Request(url, headers={"Accept": "text/html", "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        page = response.read().decode("utf-8", errors="replace")
+    found = re.search(r"atacado-cotacao-dolar.*?=\s*</span>\s*<strong>\s*(\d+[.,]\d+)", page, re.S)
+    rate = to_float(found.group(1)) if found else 0.0
+    if not 1 < rate < 20:
+        raise ValueError("Cotação do dia não encontrada na página do Atacado Paraguai.")
+    return rate
 
 
 def fetch_bypharmacon_rate(url: str, publishable_key: str, timeout: int) -> float:
@@ -597,7 +752,7 @@ def deliver_alerts(
     rows = list(connection.execute("SELECT * FROM alertas_pendentes ORDER BY id LIMIT 250"))
     if not rows:
         return
-    lines = [f"🔔 ByPharmacon: {len(rows)} alteração(ões)", ""]
+    lines = [f"🔔 Comparador de preços: {len(rows)} alteração(ões)", ""]
     lines.extend(f"• {row['resumo']}" for row in rows[:max_items])
     if len(rows) > max_items:
         lines.extend(["", f"… e mais {len(rows) - max_items} alteração(ões)."])
@@ -608,9 +763,9 @@ def deliver_alerts(
         try:
             send_whatsapp(config, message)
         except Exception:
-            logger.exception("Falha ao enviar alerta do ByPharmacon; será tentado novamente.")
+            logger.exception("Falha ao enviar alerta do comparador; será tentado novamente.")
             return
-        logger.info("Alerta do ByPharmacon enviado ao servidor do WhatsApp.")
+        logger.info("Alerta do comparador enviado ao servidor do WhatsApp.")
     connection.executemany("DELETE FROM alertas_pendentes WHERE id = ?", [(row["id"],) for row in rows])
     connection.commit()
 
@@ -626,8 +781,7 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_panel_data(
-    shape_items: list[dict[str, Any]],
-    byp_items: list[dict[str, Any]],
+    items_by_store: dict[str, list[dict[str, Any]]],
     matches: list[dict[str, Any]],
     changes: list[dict[str, Any]],
     errors: list[str],
@@ -635,19 +789,19 @@ def build_panel_data(
 ) -> dict[str, Any]:
     return {
         "gerado_em": iso_now(),
+        "ordem_lojas": list(STORES),
         "lojas": STORE_LABELS,
         "cotacoes": rates,
         "erros": errors,
-        "pares": [
+        "grupos": [
             {
-                SHAPE: public_item(match[SHAPE]),
-                BYP: public_item(match[BYP]),
+                "itens": {store: public_item(item) for store, item in match["itens"].items()},
                 "score": match["score"],
                 "confianca": match["confianca"],
             }
             for match in matches
         ],
-        "produtos": [public_item(item) for item in shape_items + byp_items],
+        "produtos": [public_item(item) for store in STORES for item in items_by_store[store]],
         "mudancas": changes,
     }
 
@@ -677,36 +831,54 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         if not shape_items:
             errors.append("Shape Total: o monitor ainda não salvou o catálogo.")
 
-    try:
-        byp_items = fetch_bypharmacon(settings["bypharmacon_api_url"], timeout)
-    except Exception as exc:
-        byp_items = []
-        errors.append(f"ByPharmacon: {type(exc).__name__}: {exc}")
-
+    items_by_store: dict[str, list[dict[str, Any]]] = {SHAPE: shape_items, BYP: [], ATACADO: []}
+    own_rates = {SHAPE: shape_rate, BYP: 0.0, ATACADO: 0.0}
     fixed_rate = number(settings["cotacao_fixa"])
-    if fixed_rate > 0:
-        rates = {SHAPE: fixed_rate, BYP: fixed_rate}
-    else:
-        try:
-            byp_rate = fetch_bypharmacon_rate(
+    sources = {
+        BYP: (
+            lambda: fetch_bypharmacon(settings["bypharmacon_api_url"], timeout),
+            lambda: fetch_bypharmacon_rate(
                 settings["bypharmacon_fx_url"], settings["bypharmacon_publishable_key"], timeout
-            )
+            ),
+        ),
+        ATACADO: (
+            lambda: fetch_atacado(settings["atacado_api_url"], settings["atacado_category"], timeout),
+            lambda: fetch_atacado_rate(settings["atacado_rate_url"], timeout),
+        ),
+    }
+    for store, (fetch_items, fetch_rate) in sources.items():
+        try:
+            items_by_store[store] = fetch_items()
         except Exception as exc:
-            byp_rate = 0.0
-            errors.append(f"Cotação do ByPharmacon indisponível ({type(exc).__name__}); valores em reais usam a do Shape Total.")
-        if shape_rate <= 0 and byp_rate <= 0:
-            errors.append("Nenhuma loja informou a cotação; defina 'cotacao_fixa' no config.json para ver valores em reais.")
-        rates = {SHAPE: shape_rate or byp_rate, BYP: byp_rate or shape_rate}
+            errors.append(f"{STORE_LABELS[store]}: {type(exc).__name__}: {exc}")
+            continue
+        if fixed_rate <= 0:
+            try:
+                own_rates[store] = fetch_rate()
+            except Exception as exc:
+                errors.append(f"Cotação do {STORE_LABELS[store]} indisponível ({type(exc).__name__}); usando a de outra loja.")
 
-    record_history(connection, SHAPE, shape_items)
-    summaries = record_history(connection, BYP, byp_items)
-    if send_alerts and settings["notify_bypharmacon_changes"]:
+    if fixed_rate > 0:
+        rates = {store: fixed_rate for store in STORES}
+    else:
+        fallback = next((rate for rate in own_rates.values() if rate > 0), 0.0)
+        if fallback <= 0:
+            errors.append("Nenhuma loja informou a cotação; defina 'cotacao_fixa' no config.json para ver valores em reais.")
+        rates = {store: own_rates[store] or fallback for store in STORES}
+
+    summaries: list[str] = []
+    for store in STORES:
+        changes = record_history(connection, store, items_by_store[store])
+        if store != SHAPE:
+            summaries.extend(changes)
+    notify = settings.get("notify_bypharmacon_changes", settings["notify_changes"])
+    if send_alerts and notify:
         connection.executemany("INSERT INTO alertas_pendentes(resumo) VALUES(?)", [(text,) for text in summaries])
     connection.commit()
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))
-    matches = match_products(shape_items, byp_items, confirmed, rejected, number(settings["min_score"], 0.62))
-    data = build_panel_data(shape_items, byp_items, matches, price_changes(connection), errors, rates)
+    matches = match_products(items_by_store, confirmed, rejected, number(settings["min_score"], 0.62))
+    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates)
     panel_path = resolve_path(config_path, settings["panel_path"])
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     panel_path.write_text(render_panel(data), encoding="utf-8")
@@ -714,9 +886,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     for error in errors:
         logger.error("Comparador: %s", error)
     logger.info(
-        "Comparador: %s produtos Shape Total, %s ByPharmacon, %s pares, %s alterações no ByPharmacon.",
-        len(shape_items),
-        len(byp_items),
+        "Comparador: %s; %s grupos comparáveis; %s alterações fora do Shape Total.",
+        ", ".join(f"{len(items_by_store[store])} {STORE_LABELS[store]}" for store in STORES),
         len(matches),
         len(summaries),
     )
@@ -727,7 +898,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Comparador de preços Shape Total x ByPharmacon")
+    parser = argparse.ArgumentParser(description="Comparador de preços Shape Total x ByPharmacon x Atacado Paraguai")
     parser.add_argument("--config", default="config.json", help="Caminho do arquivo de configuração")
     parser.add_argument("--sem-alertas", action="store_true", help="Atualiza o painel sem enviar WhatsApp")
     parser.add_argument("--abrir", action="store_true", help="Abre o painel no navegador ao terminar")

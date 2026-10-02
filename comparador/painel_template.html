@@ -52,6 +52,8 @@
   s { color: var(--ink-3); font-weight: 400; }
   .count { margin: 8px 2px; }
   .hidden { display: none; }
+  .loja { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+  .nome + .nome { margin-top: 4px; }
   a { color: var(--accent); }
 </style>
 </head>
@@ -75,29 +77,25 @@
     <div class="filters">
       <input type="search" id="p-busca" placeholder="Buscar produto ou marca…">
       <select id="p-marca"><option value="">Todas as marcas</option></select>
-      <select id="p-vencedor">
-        <option value="">Qualquer loja mais barata</option>
-        <option value="shapetotal">Mais barato no Shape Total</option>
-        <option value="bypharmacon">Mais barato no ByPharmacon</option>
-        <option value="empate">Mesmo preço</option>
+      <select id="p-vencedor"><option value="">Qualquer loja mais barata</option></select>
+      <select id="p-lojas">
+        <option value="">Em 2 ou mais lojas</option>
+        <option value="todas">Só os que estão em todas as lojas</option>
       </select>
       <select id="p-ordem">
         <option value="pct">Maior diferença (%)</option>
         <option value="abs">Maior diferença (valor)</option>
         <option value="nome">Nome</option>
       </select>
-      <label class="check"><input type="checkbox" id="p-estoque"> Só com estoque nas duas</label>
-      <label class="check"><input type="checkbox" id="p-baixa"> Incluir pares duvidosos</label>
+      <label class="check"><input type="checkbox" id="p-estoque"> Só com estoque em todas</label>
+      <label class="check"><input type="checkbox" id="p-baixa"> Incluir correspondências duvidosas</label>
     </div>
     <div class="count sub" id="p-contagem"></div>
     <div class="wrap"><table>
-      <thead><tr>
-        <th>Produto</th><th>Marca</th><th class="num">Shape Total</th><th class="num">ByPharmacon</th>
-        <th class="num">Diferença</th><th>Mais barato</th><th>Correspondência</th>
-      </tr></thead>
+      <thead><tr id="p-cabecalho"></tr></thead>
       <tbody id="p-corpo"></tbody>
     </table></div>
-    <p class="sub">Os pares são montados automaticamente pelo nome, dose e embalagem. Confira os marcados como "provável" ou "duvidosa" antes de decidir; para corrigir um par, edite <code>correspondencias.json</code>. Os valores em reais usam a cotação que cada loja publica no dia, por isso o mesmo preço em dólar pode sair diferente em reais. Frete não incluído.</p>
+    <p class="sub">As correspondências são montadas automaticamente pelo nome, dose e embalagem. Confira as marcadas como "provável" ou "duvidosa" antes de decidir; para corrigir, edite <code>correspondencias.json</code>. Os valores em reais usam a cotação que cada loja publica no dia, por isso o mesmo preço em dólar pode sair diferente em reais. Frete não incluído.</p>
   </section>
 
   <section id="tab-produtos" class="hidden">
@@ -105,11 +103,7 @@
       <input type="search" id="t-busca" placeholder="Buscar produto ou princípio ativo (ex.: roacutan, enantato 250)…">
       <select id="t-marca"><option value="">Todas as marcas</option></select>
       <select id="t-categoria"><option value="">Todas as categorias</option></select>
-      <select id="t-loja">
-        <option value="">As duas lojas</option>
-        <option value="shapetotal">Shape Total</option>
-        <option value="bypharmacon">ByPharmacon</option>
-      </select>
+      <select id="t-loja"><option value="">Todas as lojas</option></select>
       <select id="t-ordem">
         <option value="asc">Menor preço</option>
         <option value="desc">Maior preço</option>
@@ -136,14 +130,14 @@
 <script id="dados" type="application/json">__DADOS__</script>
 <script>
 const D = JSON.parse(document.getElementById('dados').textContent);
-const S = 'shapetotal', B = 'bypharmacon';
+const LOJAS = D.ordem_lojas;
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const usd = (v) => 'US$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const norm = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const matches = (text, query) => norm(query).split(/\s+/).filter(Boolean).every((word) => text.includes(word));
 const R = D.cotacoes || {};
-const temReais = R[S] > 0 && R[B] > 0;
+const temReais = LOJAS.every((loja) => R[loja] > 0);
 const real = (v) => 'R$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 // Valor usado para comparar: reais pela cotação da própria loja; sem cotação, dólar.
 const valor = (p, dolares = p.preco) => temReais ? dolares * R[p.loja] : dolares;
@@ -164,53 +158,60 @@ function preencher(id, opcoes) {
   $(id).insertAdjacentHTML('beforeend', opcoes.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join(''));
 }
 
-const pares = D.pares.map((par) => {
-  const s = par[S], b = par[B];
-  const diff = Math.round((valor(b) - valor(s)) * 100) / 100;
-  const high = Math.max(valor(b), valor(s));
+const grupos = D.grupos.map((grupo) => {
+  const itens = LOJAS.filter((loja) => grupo.itens[loja]).map((loja) => grupo.itens[loja]);
+  const valores = itens.map((p) => Math.round(valor(p) * 100) / 100).sort((a, b) => a - b);
+  const menor = valores[0], maior = valores[valores.length - 1];
+  const baratos = itens.filter((p) => Math.round(valor(p) * 100) / 100 === menor);
+  const comMarca = itens.find((p) => p.marca) || itens[0];
   return {
-    ...par, s, b,
-    abs: Math.abs(diff),
-    pct: high > 0 ? Math.abs(diff) / high * 100 : 0,
-    vencedor: diff === 0 ? 'empate' : diff > 0 ? S : B,
-    marca: marcaChave(b.marca ? b : s),
-    texto: norm([s.nome, b.nome, s.marca, b.marca, s.detalhe].join(' ')),
+    ...grupo, lista: itens,
+    abs: Math.round((maior - menor) * 100) / 100,
+    pct: maior > 0 ? (maior - menor) / maior * 100 : 0,
+    // Empate = as lojas mais baratas cobram exatamente o mesmo.
+    vencedor: baratos.length > 1 ? 'empate' : baratos[0].loja,
+    marca: marcaChave(comMarca), marcaNome: comMarca.marca,
+    texto: norm(itens.map((p) => [p.nome, p.marca, p.detalhe].join(' ')).join(' ')),
   };
 });
 const produtos = D.produtos.map((p) => ({...p, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe].join(' '))}));
 const contar = (lista, campo) => lista.reduce((acc, item) => (acc[item[campo]] = (acc[item[campo]] || 0) + 1, acc), {});
 const opcoesMarca = (lista, campo) => Object.entries(contar(lista, campo))
   .map(([key, n]) => [key, `${marcaRotulo(key)} (${n})`]).sort((a, b) => a[1].localeCompare(b[1]));
-preencher('p-marca', opcoesMarca(pares, 'marca'));
+preencher('p-marca', opcoesMarca(grupos, 'marca'));
+preencher('p-vencedor', LOJAS.map((loja) => [loja, 'Mais barato no ' + D.lojas[loja]]).concat([['empate', 'Mesmo preço']]));
 preencher('t-marca', opcoesMarca(produtos, 'marcaKey'));
+preencher('t-loja', LOJAS.map((loja) => [loja, D.lojas[loja]]));
 preencher('t-categoria', Object.entries(contar(produtos.filter((p) => p.cat), 'cat'))
   .map(([key, n]) => [key, `${key} (${n})`]).sort((a, b) => a[1].localeCompare(b[1])));
-const confiaveis = pares.filter((par) => par.confianca !== 'baixa');
+const confiaveis = grupos.filter((grupo) => grupo.confianca !== 'baixa');
 
 $('gerado').textContent = 'Atualizado em ' + when(D.gerado_em) + ' · recarregue a página para ver a coleta mais recente';
 $('cotacao').textContent = temReais
-  ? `Cotação do dia (US$ 1): ${D.lojas[S]} ${real(R[S])} · ${D.lojas[B]} ${real(R[B])}`
+  ? 'Cotação do dia (US$ 1): ' + LOJAS.map((loja) => `${D.lojas[loja]} ${real(R[loja])}`).join(' · ')
   : 'Sem cotação do dia: valores em dólar.';
 if (D.erros.length) {
   $('erros').innerHTML = '<div class="banner"><b>Coleta incompleta.</b> ' + D.erros.map(esc).join(' ') + '</div>';
 }
 
 const tile = (value, label) => `<div class="tile"><b>${esc(value)}</b><span>${esc(label)}</span></div>`;
-const count = (store) => produtos.filter((p) => p.loja === store).length;
-$('tiles').innerHTML = [
-  tile(count(S), 'produtos no Shape Total'),
-  tile(count(B), 'produtos no ByPharmacon'),
-  tile(confiaveis.length, 'produtos comparáveis nas duas lojas'),
-  tile(confiaveis.filter((par) => par.vencedor === S).length, 'mais baratos no Shape Total'),
-  tile(confiaveis.filter((par) => par.vencedor === B).length, 'mais baratos no ByPharmacon'),
-  tile(confiaveis.filter((par) => par.vencedor === 'empate').length, 'com o mesmo preço'),
-].join('');
+$('tiles').innerHTML = LOJAS.map((loja) => tile(produtos.filter((p) => p.loja === loja).length, 'produtos no ' + D.lojas[loja]))
+  .concat([tile(confiaveis.length, 'produtos em 2 ou mais lojas')])
+  .concat(LOJAS.map((loja) => tile(confiaveis.filter((grupo) => grupo.vencedor === loja).length, 'mais baratos no ' + D.lojas[loja])))
+  .concat([tile(confiaveis.filter((grupo) => grupo.vencedor === 'empate').length, 'com o mesmo preço')])
+  .join('');
+
+$('p-cabecalho').innerHTML = '<th>Produto</th><th>Marca</th>' +
+  LOJAS.map((loja) => `<th class="num">${esc(D.lojas[loja])}</th>`).join('') +
+  '<th class="num">Diferença</th><th>Mais barato</th><th>Correspondência</th>';
 
 function stockTag(p) {
   if (!p.disponivel) return '<span class="tag bad">sem estoque</span>';
+  if (p.estoque == null) return '<span class="tag">em estoque</span>';
   return `<span class="tag" title="${esc(p.estoque_detalhe)}">${esc(p.estoque)} em estoque</span>`;
 }
 function priceCell(p, isWinner) {
+  if (!p) return '<td class="num muted">—</td>';
   const original = p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : '';
   const tiers = p.atacado.map((t) => `${t.min}+ un.: ${dinheiro(valor(p, t.preco))}`).join(' · ');
   return `<td class="num${isWinner ? ' win' : ''}"><span class="price">${dinheiro(valor(p))}</span>${original}` +
@@ -226,30 +227,31 @@ const CONF = {
 
 function renderPares() {
   const query = $('p-busca').value, winner = $('p-vencedor').value, order = $('p-ordem').value, brand = $('p-marca').value;
-  let rows = pares.filter((par) =>
-    ($('p-baixa').checked || par.confianca !== 'baixa') &&
-    (!winner || par.vencedor === winner) &&
-    (!brand || par.marca === brand) &&
-    (!$('p-estoque').checked || (par.s.disponivel && par.b.disponivel)) &&
-    matches(par.texto, query));
-  rows.sort(order === 'nome' ? (a, b) => a.s.nome.localeCompare(b.s.nome) : (a, b) => b[order] - a[order]);
-  $('p-contagem').textContent = rows.length + ' de ' + pares.length + ' pares';
-  $('p-corpo').innerHTML = rows.map((par) => {
-    const [cls, label] = CONF[par.confianca];
-    const cheaper = par.vencedor === 'empate'
+  let rows = grupos.filter((grupo) =>
+    ($('p-baixa').checked || grupo.confianca !== 'baixa') &&
+    (!winner || grupo.vencedor === winner) &&
+    (!brand || grupo.marca === brand) &&
+    (!$('p-lojas').value || grupo.lista.length === LOJAS.length) &&
+    (!$('p-estoque').checked || grupo.lista.every((p) => p.disponivel)) &&
+    matches(grupo.texto, query));
+  rows.sort(order === 'nome' ? (a, b) => a.lista[0].nome.localeCompare(b.lista[0].nome) : (a, b) => b[order] - a[order]);
+  $('p-contagem').textContent = rows.length + ' de ' + grupos.length + ' produtos comparáveis';
+  $('p-corpo').innerHTML = rows.map((grupo) => {
+    const [cls, label] = CONF[grupo.confianca];
+    const cheaper = grupo.vencedor === 'empate'
       ? '<span class="tag">mesmo preço</span>'
-      : `<span class="tag win-tag">${esc(D.lojas[par.vencedor])}</span>`;
+      : `<span class="tag win-tag">${esc(D.lojas[grupo.vencedor])}</span>`;
+    const nomes = grupo.lista.map((p) =>
+      `<div class="nome" title="ID ${esc(D.lojas[p.loja])}: ${esc(p.id)}"><div class="loja">${esc(D.lojas[p.loja])}</div>${esc(p.nome)}</div>`).join('');
     return `<tr>
-      <td><div title="ID Shape Total: ${esc(par.s.id)}">${esc(par.s.nome)}</div>
-          <div class="sub" title="ID ByPharmacon: ${esc(par.b.id)}">${esc(par.b.nome)}</div></td>
-      <td>${esc(par.b.marca || par.s.marca)}</td>
-      ${priceCell(par.s, par.vencedor === S)}
-      ${priceCell(par.b, par.vencedor === B)}
-      <td class="num">${par.abs ? dinheiro(par.abs) + '<div class="sub">' + par.pct.toFixed(1).replace('.', ',') + '%</div>' : '—'}</td>
+      <td>${nomes}</td>
+      <td>${esc(grupo.marcaNome)}</td>
+      ${LOJAS.map((loja) => priceCell(grupo.itens[loja], grupo.vencedor === loja)).join('')}
+      <td class="num">${grupo.abs ? dinheiro(grupo.abs) + '<div class="sub">' + grupo.pct.toFixed(1).replace('.', ',') + '%</div>' : '—'}</td>
       <td>${cheaper}</td>
       <td><span class="tag ${cls}">${label}</span></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" class="muted">Nenhum par encontrado com esses filtros.</td></tr>';
+  }).join('') || `<tr><td colspan="${LOJAS.length + 5}" class="muted">Nenhum produto encontrado com esses filtros.</td></tr>`;
 }
 
 const LIMITE = 400;
@@ -287,7 +289,7 @@ document.querySelectorAll('.tabs button').forEach((button) => button.addEventLis
   document.querySelectorAll('.tabs button').forEach((other) => other.setAttribute('aria-selected', String(other === button)));
   ['pares', 'produtos', 'mudancas'].forEach((name) => $('tab-' + name).classList.toggle('hidden', name !== button.dataset.tab));
 }));
-['p-busca', 'p-marca', 'p-vencedor', 'p-ordem', 'p-estoque', 'p-baixa'].forEach((id) => $(id).addEventListener('input', renderPares));
+['p-busca', 'p-marca', 'p-vencedor', 'p-lojas', 'p-ordem', 'p-estoque', 'p-baixa'].forEach((id) => $(id).addEventListener('input', renderPares));
 ['t-busca', 't-marca', 't-categoria', 't-loja', 't-ordem', 't-estoque'].forEach((id) => $(id).addEventListener('input', renderProdutos));
 renderPares(); renderProdutos(); renderMudancas();
 </script>

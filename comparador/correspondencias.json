@@ -1,5 +1,5 @@
 {
-  "_como_usar": "O comparador casa os produtos das duas lojas automaticamente. Use 'confirmar' para forçar um par e 'rejeitar' para desfazer um par errado. Os IDs aparecem no painel, ao passar o mouse sobre o nome do produto.",
+  "_como_usar": "O comparador casa os produtos das lojas automaticamente. Em 'confirmar', cada linha junta os produtos indicados (use 2 ou 3 das chaves shapetotal, bypharmacon e atacadoparaguai). Em 'rejeitar', cada linha separa produtos que foram juntados por engano. Os IDs aparecem no painel, ao passar o mouse sobre o nome do produto.",
   "confirmar": [
     { "shapetotal": 2980, "bypharmacon": "prod_01M0J89D2N30E9H8SJXS0DSCWC", "nota": "ZPHC Ztrop 180 UI (5 x 36 UI)" },
     { "shapetotal": 3174, "bypharmacon": "prod_01M0J89D3CN5MCXK87J35V6W2K", "nota": "ZPHC Ztrop 200 UI" },

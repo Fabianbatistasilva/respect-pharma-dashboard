@@ -8,7 +8,7 @@
   },
   "comparador": {
     "fetch_shape_directly": true,
-    "notify_bypharmacon_changes": false,
+    "notify_changes": false,
     "database_path": "data/comparador.sqlite3",
     "panel_path": "data/painel.html"
   }

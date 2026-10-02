@@ -67,7 +67,7 @@ jobs:
         run: python -m unittest discover -s tests
 
       # Uma loja fora do ar nao pode derrubar o deploy: o painel avisa o que faltou.
-      - name: Build Shape Total x ByPharmacon panel
+      - name: Build store comparison panel
         working-directory: comparador
         run: python comparador.py --config config.json --sem-alertas || echo "::warning::Comparador terminou com coleta incompleta"
 

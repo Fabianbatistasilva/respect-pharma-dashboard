@@ -6,11 +6,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from comparador import (
+    ATACADO,
     BYP,
     SHAPE,
     features,
     match_products,
     match_score,
+    normalize_atacado,
     normalize_bypharmacon,
     open_database,
     price_changes,
@@ -71,22 +73,51 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(score(shape, byp), 0)
 
     def test_manual_overrides_win_over_automatic_matching(self):
-        shape_items = [item(SHAPE, 1, "ZPHC ZTROP X 200 UI.", "ZPHC"), item(SHAPE, 2, "ZPHC ZTROP GH 16 UI", "ZPHC")]
-        byp_items = [item(BYP, "a", "ZPHC Ztrop 200", "ZPHC")]
+        stores = {
+            SHAPE: [item(SHAPE, 1, "ZPHC ZTROP X 200 UI.", "ZPHC"), item(SHAPE, 2, "ZPHC ZTROP GH 16 UI", "ZPHC")],
+            BYP: [item(BYP, "a", "ZPHC Ztrop 200", "ZPHC")],
+        }
 
-        matches = match_products(shape_items, byp_items, {("1", "a")}, {("2", "a")}, 0.62)
+        matches = match_products(stores, [[(SHAPE, "1"), (BYP, "a")]], {frozenset({(SHAPE, "2"), (BYP, "a")})}, 0.62)
 
         self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0][SHAPE]["id"], "1")
+        self.assertEqual(matches[0]["itens"][SHAPE]["id"], "1")
         self.assertEqual(matches[0]["confianca"], "confirmada")
 
     def test_large_price_gap_is_flagged_as_low_confidence(self):
-        shape_items = [item(SHAPE, 1, "OXYGEN GLOW X 70 MG.", "oxygen", price=100)]
-        byp_items = [item(BYP, "a", "OXYGEN GLOW 70MG", "Oxygen", price=40)]
+        stores = {
+            SHAPE: [item(SHAPE, 1, "OXYGEN GLOW X 70 MG.", "oxygen", price=100)],
+            BYP: [item(BYP, "a", "OXYGEN GLOW 70MG", "Oxygen", price=40)],
+        }
 
-        matches = match_products(shape_items, byp_items, set(), set(), 0.62)
+        matches = match_products(stores, [], set(), 0.62)
 
         self.assertEqual(matches[0]["confianca"], "baixa")
+
+    def test_same_product_in_three_stores_forms_one_group(self):
+        stores = {
+            SHAPE: [item(SHAPE, 1, "OXYGEN NAD+ X 1000 MG.", "oxygen")],
+            BYP: [item(BYP, "a", "OXYGEN NAD+ 1000MG", "Oxygen")],
+            ATACADO: [item(ATACADO, "x", "OXYGEN NAD+ 1000MG", "Oxygen")],
+        }
+
+        matches = match_products(stores, [], set(), 0.62)
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(set(matches[0]["itens"]), {SHAPE, BYP, ATACADO})
+
+    def test_group_never_joins_incompatible_products(self):
+        # O item sem dose casa com os dois, mas 40 mg e 120 mg não podem ficar no mesmo grupo.
+        stores = {
+            SHAPE: [item(SHAPE, 1, "GEN RETATRUTIDE X 40 MG.", "Gen health")],
+            BYP: [item(BYP, "a", "GEN HEALTH RETATRUTIDE", "Gen Health")],
+            ATACADO: [item(ATACADO, "x", "GEN HEALTH RETATRUTIDE 120MG", "Gen Health")],
+        }
+
+        matches = match_products(stores, [], set(), 0.5)
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(len(matches[0]["itens"]), 2)
 
 
 class BypharmaconTests(unittest.TestCase):
@@ -112,6 +143,28 @@ class BypharmaconTests(unittest.TestCase):
         self.assertEqual(product["atacado"], [{"min": 5, "preco": 40}])
         self.assertEqual(product["preco_original"], 50)
         self.assertFalse(product["disponivel"])
+
+
+class AtacadoTests(unittest.TestCase):
+    def test_normalizes_minor_units_brand_and_sale_price(self):
+        product = normalize_atacado(
+            {
+                "id": 45220,
+                "name": "OXYGEN GLOW 70MG &#8211; PEN",
+                "permalink": "https://atacadoparaguai.com.py/produto/oxygen-glow/",
+                "prices": {"price": "9000", "regular_price": "9500", "currency_minor_unit": 2, "currency_code": "USD"},
+                "brands": [{"name": "Oxygen"}],
+                "categories": [{"name": "Farma"}],
+                "is_in_stock": True,
+            }
+        )
+
+        self.assertEqual(product["nome"], "OXYGEN GLOW 70MG - PEN")
+        self.assertEqual(product["preco"], 90)
+        self.assertEqual(product["preco_original"], 95)
+        self.assertEqual(product["marca"], "Oxygen")
+        self.assertIsNone(product["estoque"])
+        self.assertTrue(product["disponivel"])
 
 
 class HistoryTests(unittest.TestCase):
