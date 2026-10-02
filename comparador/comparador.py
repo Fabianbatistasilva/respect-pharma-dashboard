@@ -52,6 +52,8 @@ DEFAULTS = {
     "min_score": 0.62,
     # Dias de histórico de preços guardados no banco; o que for mais antigo é apagado.
     "history_days": 90,
+    # Endereço aberto pelo botão "Coletar agora" do painel (na versão publicada, a página do workflow).
+    "refresh_url": None,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
     "atacado_category": "farma",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
@@ -816,6 +818,7 @@ def build_panel_data(
     errors: list[str],
     rates: dict[str, float],
     history: dict[str, dict[str, list[list[Any]]]],
+    refresh_url: str | None = None,
 ) -> dict[str, Any]:
     return {
         "gerado_em": iso_now(),
@@ -834,6 +837,7 @@ def build_panel_data(
         "produtos": [public_item(item) for store in STORES for item in items_by_store[store]],
         "mudancas": changes,
         "historico": history,
+        "atualizar_url": refresh_url,
     }
 
 
@@ -910,7 +914,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))
     matches = match_products(items_by_store, confirmed, rejected, number(settings["min_score"], 0.62))
-    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates, history_series(connection))
+    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates, history_series(connection), settings["refresh_url"])
     panel_path = resolve_path(config_path, settings["panel_path"])
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     panel_path.write_text(render_panel(data), encoding="utf-8")

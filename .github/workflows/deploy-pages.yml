@@ -5,9 +5,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      completo:
+        description: 'Tambem refazer a coleta da Respect Pharma (mais lenta)'
+        type: boolean
+        default: false
   schedule:
-    # Runs at 06:00 and 18:00 in America/Sao_Paulo (UTC-3).
+    # Coleta completa (inclui Respect Pharma): 06:00 e 18:00 em America/Sao_Paulo (UTC-3).
     - cron: '0 9,21 * * *'
+    # Coleta rapida das lojas do comparador: a cada 20 minutos.
+    - cron: '10,30,50 * * * *'
 
 permissions:
   # write: o historico de precos e salvo no branch comparador-data.
@@ -23,6 +30,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Coleta rapida: so o comparador roda; os arquivos da Respect Pharma sao reaproveitados do site no ar.
+      FULL: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.event.schedule == '0 9,21 * * *') || (github.event_name == 'workflow_dispatch' && inputs.completo) }}
 
     steps:
       - name: Checkout
@@ -34,20 +44,41 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
       - name: Install dependencies
+        if: env.FULL == 'true'
         run: npm ci
 
       - name: Install Playwright Chromium
+        if: env.FULL == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Run tests
+        if: env.FULL == 'true'
         run: npm test
 
       - name: Run syntax checks
         run: npm run check
 
       - name: Scrape latest prices
+        if: env.FULL == 'true'
         run: npm run scrape:respect
+
+      - name: Reuse published Respect Pharma files
+        if: env.FULL != 'true'
+        env:
+          SITE: ${{ steps.pages.outputs.base_url }}
+        run: |
+          mkdir -p reports data screenshots
+          for file in reports/respect_price_report.html reports/respect_price_report.md data/respect_products_raw.json data/respect_products.csv; do
+            curl -fsS --retry 3 -o "$file" "$SITE/$file"
+          done
+          for file in screenshots/promo_page.png screenshots/main_page.png screenshots/pypharma_page.png; do
+            curl -fsS --retry 3 -o "$file" "$SITE/$file" || rm -f "$file"
+          done
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -71,6 +102,7 @@ jobs:
           fi
 
       - name: Run comparador tests
+        if: env.FULL == 'true'
         working-directory: comparador
         run: python -m unittest discover -s tests
 
@@ -95,9 +127,6 @@ jobs:
 
       - name: Build static Pages artifact
         run: npm run publish:site
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

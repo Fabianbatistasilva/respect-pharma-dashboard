@@ -55,6 +55,8 @@
   .loja { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
   .nome + .nome { margin-top: 4px; }
   a { color: var(--accent); }
+  a.botao { margin-left: auto; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 6px; text-decoration: none; font-weight: 600; white-space: nowrap; }
+  #atualizar-ajuda { margin: -8px 0 16px; }
 
   /* Gráfico de evolução: uma cor fixa por loja (paleta validada para daltonismo). */
   :root { --serie-shapetotal: #2a78d6; --serie-bypharmacon: #eb6834; --serie-atacadoparaguai: #1baf7a; }
@@ -91,7 +93,9 @@
     <h1>Comparador de preços</h1>
     <span class="sub" id="gerado"></span>
     <span class="sub" id="cotacao"></span>
+    <a class="botao hidden" id="atualizar" target="_blank" rel="noopener">Coletar agora</a>
   </header>
+  <div class="sub hidden" id="atualizar-ajuda">O botão abriu o GitHub: lá, clique em <b>Run workflow</b> e confirme (é preciso estar logado como dono do repositório). A coleta leva cerca de 2 minutos; depois, recarregue esta página.</div>
   <div id="erros"></div>
   <div class="tiles" id="tiles"></div>
 
@@ -241,6 +245,11 @@ $('gerado').textContent = 'Atualizado em ' + when(D.gerado_em) + ' · recarregue
 $('cotacao').textContent = temReais
   ? 'Cotação do dia (US$ 1): ' + LOJAS.map((loja) => `${D.lojas[loja]} ${real(R[loja])}`).join(' · ')
   : 'Sem cotação do dia: valores em dólar.';
+if (D.atualizar_url) {
+  $('atualizar').href = D.atualizar_url;
+  $('atualizar').classList.remove('hidden');
+  $('atualizar').addEventListener('click', () => $('atualizar-ajuda').classList.remove('hidden'));
+}
 if (D.erros.length) {
   $('erros').innerHTML = '<div class="banner"><b>Coleta incompleta.</b> ' + D.erros.map(esc).join(' ') + '</div>';
 }

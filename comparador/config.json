@@ -8,6 +8,7 @@
   },
   "comparador": {
     "fetch_shape_directly": true,
+    "refresh_url": "https://github.com/Fabianbatistasilva/respect-pharma-dashboard/actions/workflows/deploy-pages.yml",
     "notify_changes": false,
     "database_path": "data/comparador.sqlite3",
     "panel_path": "data/painel.html"
