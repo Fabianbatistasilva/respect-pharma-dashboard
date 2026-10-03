@@ -217,6 +217,29 @@ class AtacadoBrasilTests(unittest.TestCase):
             ["PREÇO (Atacado Brasil): " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 10+ un.: US$ 270.00"],
         )
 
+    def test_quantity_tier_change_is_reported_when_unit_price_stays(self):
+        connection = open_database(Path(":memory:"))
+        product = normalize_atacadobrasil(self.PRODUCT)
+        record_history(connection, ATACADO_BR, [product])
+        cheaper_wholesale = normalize_atacadobrasil(dict(self.PRODUCT, priceAtacadoPlus="265"))
+
+        summaries = record_history(connection, ATACADO_BR, [cheaper_wholesale])
+
+        self.assertEqual(summaries, ["FAIXAS (Atacado Brasil): " + product["nome"] + " — 10+ un.: US$ 270.00 → US$ 265.00"])
+        self.assertEqual(record_history(connection, ATACADO_BR, [cheaper_wholesale]), [])
+
+    def test_history_from_before_tier_tracking_does_not_trigger_alerts(self):
+        connection = open_database(Path(":memory:"))
+        product = normalize_atacadobrasil(self.PRODUCT)
+        connection.execute(
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em) VALUES(?, ?, ?, ?, 1, ?)",
+            (ATACADO_BR, product["id"], product["nome"], product["preco"], "2026-10-01T00:00:00+00:00"),
+        )
+
+        self.assertEqual(record_history(connection, ATACADO_BR, [product]), [])
+        self.assertEqual(connection.execute("SELECT COUNT(*) FROM historico").fetchone()[0], 1)
+        self.assertIsNotNone(connection.execute("SELECT faixas FROM historico").fetchone()[0])
+
     def test_product_missing_from_list_is_out_of_stock_not_removed(self):
         connection = open_database(Path(":memory:"))
         product = normalize_atacadobrasil(self.PRODUCT)

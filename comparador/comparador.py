@@ -772,7 +772,8 @@ def open_database(path: Path) -> sqlite3.Connection:
             preco REAL NOT NULL,
             disponivel INTEGER NOT NULL,
             visto_em TEXT NOT NULL,
-            removido INTEGER NOT NULL DEFAULT 0
+            removido INTEGER NOT NULL DEFAULT 0,
+            faixas TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_historico_produto ON historico(loja, produto_id, id);
         CREATE TABLE IF NOT EXISTS alertas_pendentes (
@@ -784,7 +785,24 @@ def open_database(path: Path) -> sqlite3.Connection:
     columns = {row[1] for row in connection.execute("PRAGMA table_info(historico)")}
     if "removido" not in columns:
         connection.execute("ALTER TABLE historico ADD COLUMN removido INTEGER NOT NULL DEFAULT 0")
+    if "faixas" not in columns:
+        connection.execute("ALTER TABLE historico ADD COLUMN faixas TEXT")
     return connection
+
+
+def describe_tier_changes(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> str:
+    """Texto com as faixas de quantidade que mudaram: "10+ un.: US$ 270.00 → US$ 265.00"."""
+    old = {tier["min"]: tier["preco"] for tier in before}
+    new = {tier["min"]: tier["preco"] for tier in after}
+    parts = []
+    for minimum in sorted(old.keys() | new.keys()):
+        if minimum not in old:
+            parts.append(f"{minimum}+ un.: agora {format_price(new[minimum])}")
+        elif minimum not in new:
+            parts.append(f"{minimum}+ un.: sem desconto (era {format_price(old[minimum])})")
+        elif old[minimum] != new[minimum]:
+            parts.append(f"{minimum}+ un.: {format_price(old[minimum])} → {format_price(new[minimum])}")
+    return " · ".join(parts)
 
 
 def last_states(connection: sqlite3.Connection, store: str) -> dict[str, sqlite3.Row]:
@@ -807,17 +825,24 @@ def record_history(
     for item in items:
         before = previous.get(item["id"])
         was_removed = before is not None and bool(before["removido"])
+        tiers = json.dumps(item.get("atacado") or [], sort_keys=True)
+        before_tiers = before["faixas"] if before is not None else None
+        # Linhas antigas não têm as faixas gravadas: a primeira leitura só registra, sem avisar.
+        tiers_changed = before_tiers is not None and before_tiers != tiers
         unchanged = (
             before is not None
             and not was_removed
             and before["preco"] == item["preco"]
             and bool(before["disponivel"]) == item["disponivel"]
         )
-        if unchanged:
+        if unchanged and not tiers_changed:
+            if before_tiers is None:
+                connection.execute("UPDATE historico SET faixas = ? WHERE id = ?", (tiers, before["id"]))
             continue
         connection.execute(
-            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em) VALUES(?, ?, ?, ?, ?, ?)",
-            (store, item["id"], item["nome"], item["preco"], int(item["disponivel"]), seen_at),
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, faixas) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (store, item["id"], item["nome"], item["preco"], int(item["disponivel"]), seen_at, tiers),
         )
         if not previous:
             continue
@@ -834,6 +859,10 @@ def record_history(
                 summaries.append(f"VOLTOU ({label}): {item['nome']} — {alert_value(item, rate)}")
             else:
                 summaries.append(f"ESGOTOU ({label}): {item['nome']}")
+        # Com o preço de 1 unidade igual, a mudança foi só no desconto por quantidade.
+        if tiers_changed and before["preco"] == item["preco"] and item["disponivel"]:
+            details = describe_tier_changes(json.loads(before_tiers), item.get("atacado") or [])
+            summaries.append(f"FAIXAS ({label}): {item['nome']} — {details}")
 
     current_ids = {item["id"] for item in items}
     hides_out_of_stock = store in STORES_HIDING_OUT_OF_STOCK
