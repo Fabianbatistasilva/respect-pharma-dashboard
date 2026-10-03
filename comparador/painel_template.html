@@ -54,14 +54,15 @@
   .hidden { display: none; }
   .loja { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
   .nome + .nome { margin-top: 4px; }
+  #p-corpo td:first-child { min-width: 240px; }
   a { color: var(--accent); }
   a.botao { margin-left: auto; padding: 6px 12px; border: 1px solid var(--accent); border-radius: 6px; text-decoration: none; font-weight: 600; white-space: nowrap; }
   #atualizar-ajuda { margin: -8px 0 16px; }
 
   /* Gráfico de evolução: uma cor fixa por loja (paleta validada para daltonismo). */
-  :root { --serie-shapetotal: #2a78d6; --serie-bypharmacon: #eb6834; --serie-atacadoparaguai: #1baf7a; }
+  :root { --serie-shapetotal: #2a78d6; --serie-bypharmacon: #eb6834; --serie-atacadoparaguai: #1baf7a; --serie-atacadobrasil: #eda100; }
   @media (prefers-color-scheme: dark) {
-    :root { --serie-shapetotal: #3987e5; --serie-bypharmacon: #d95926; --serie-atacadoparaguai: #199e70; }
+    :root { --serie-shapetotal: #3987e5; --serie-bypharmacon: #d95926; --serie-atacadoparaguai: #199e70; --serie-atacadobrasil: #c98500; }
   }
   button.link { background: none; border: 0; padding: 0; margin-top: 4px; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline; }
   dialog { width: min(820px, calc(100vw - 24px)); border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: var(--surface); color: var(--ink); }
@@ -128,6 +129,7 @@
       <tbody id="p-corpo"></tbody>
     </table></div>
     <p class="sub">As correspondências são montadas automaticamente pelo nome, dose e embalagem. Confira as marcadas como "provável" ou "duvidosa" antes de decidir; para corrigir, edite <code>correspondencias.json</code>. Os valores em reais usam a cotação que cada loja publica no dia, por isso o mesmo preço em dólar pode sair diferente em reais. Frete não incluído.</p>
+    <div id="notas"></div>
   </section>
 
   <section id="tab-produtos" class="hidden">
@@ -250,6 +252,7 @@ if (D.atualizar_url) {
   $('atualizar').classList.remove('hidden');
   $('atualizar').addEventListener('click', () => $('atualizar-ajuda').classList.remove('hidden'));
 }
+$('notas').innerHTML = (D.notas || []).map((nota) => `<p class="sub">${esc(nota)}</p>`).join('');
 if (D.erros.length) {
   $('erros').innerHTML = '<div class="banner"><b>Coleta incompleta.</b> ' + D.erros.map(esc).join(' ') + '</div>';
 }
@@ -273,10 +276,10 @@ function stockTag(p) {
 function priceCell(p, isWinner) {
   if (!p) return '<td class="num muted">—</td>';
   const original = p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : '';
-  const tiers = p.atacado.map((t) => `${t.min}+ un.: ${dinheiro(valor(p, t.preco))}`).join(' · ');
+  const tiers = p.atacado.map((t) => `<div class="sub">${t.min}+ un.: ${dinheiro(valor(p, t.preco))}</div>`).join('');
   return `<td class="num${isWinner ? ' win' : ''}"><span class="price">${dinheiro(valor(p))}</span>${original}` +
     (temReais ? `<div class="sub">${usd(p.preco)}</div>` : '') +
-    (tiers ? `<div class="sub">${esc(tiers)}</div>` : '') + `<div>${stockTag(p)}</div></td>`;
+    tiers + `<div>${stockTag(p)}</div></td>`;
 }
 const CONF = {
   confirmada: ['', 'confirmada à mão'],

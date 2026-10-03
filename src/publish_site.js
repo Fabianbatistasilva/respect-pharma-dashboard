@@ -12,7 +12,7 @@ const REQUIRED_FILES = [
   'data/respect_products.csv',
 ];
 
-// Painel gerado por comparador/comparador.py (Shape Total x ByPharmacon x Atacado Paraguai).
+// Painel gerado por comparador/comparador.py (comparacao de precos entre as lojas).
 const COMPARADOR_SOURCE = 'comparador/data/painel.html';
 const COMPARADOR_PAGE = 'comparador.html';
 
@@ -59,7 +59,7 @@ async function copyComparador() {
 
 async function writeIndex(hasComparador) {
   const comparadorLink = hasComparador
-    ? `<li><a href="./${COMPARADOR_PAGE}">Comparador de preços: Shape Total x ByPharmacon x Atacado Paraguai</a></li>`
+    ? `<li><a href="./${COMPARADOR_PAGE}">Comparador de preços: Shape Total, ByPharmacon, Atacado Paraguai e Atacado Brasil</a></li>`
     : '';
   const html = `<!doctype html>
 <html lang="pt-BR">

@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from comparador import (
     ATACADO,
+    ATACADO_BR,
     BYP,
     SHAPE,
     features,
@@ -14,6 +15,7 @@ from comparador import (
     match_products,
     match_score,
     normalize_atacado,
+    normalize_atacadobrasil,
     normalize_bypharmacon,
     open_database,
     price_changes,
@@ -167,6 +169,63 @@ class AtacadoTests(unittest.TestCase):
         self.assertEqual(product["marca"], "Oxygen")
         self.assertIsNone(product["estoque"])
         self.assertTrue(product["disponivel"])
+
+
+class AtacadoBrasilTests(unittest.TestCase):
+    PRODUCT = {
+        "id": "abc",
+        "name": "Peptídeo ZPHC Retatrutide 80MG - 05 Vial (liofilizada)",
+        "slug": "zphc-reta-80",
+        "price": "275",
+        "priceVarejoPlus": "273",
+        "priceAtacado": "271",
+        "priceAtacadoPlus": "270",
+        "effectiveStock": 230,
+        "active": True,
+        "brand": {"name": "ZPHC"},
+        "category": {"name": "Estética"},
+    }
+
+    def test_compares_by_single_unit_price_and_keeps_quantity_tiers(self):
+        product = normalize_atacadobrasil(self.PRODUCT)
+
+        self.assertEqual(product["preco"], 275)
+        self.assertEqual(
+            product["atacado"],
+            [{"min": 3, "preco": 273}, {"min": 5, "preco": 271}, {"min": 10, "preco": 270}],
+        )
+        self.assertTrue(product["disponivel"])
+        self.assertEqual(product["url"], "https://atacadobrasilpy.com/product/zphc-reta-80")
+
+    def test_brand_field_decides_even_when_name_starts_with_product_type(self):
+        ours = normalize_atacadobrasil(self.PRODUCT)
+        same_brand = item(SHAPE, 1, "ZPHC RETATRUTIDE - 80 MG (5 VIALS X 16 MG)", "ZPHC")
+        other_brand = item(SHAPE, 2, "GEN RETATRUTIDE X 80 MG.", "Gen health", detalhe="retatrutida")
+
+        self.assertGreater(score(same_brand, ours), 0.6)
+        self.assertEqual(score(other_brand, ours), 0)
+
+    def test_alerts_say_which_quantity_each_price_is_for(self):
+        connection = open_database(Path(":memory:"))
+        product = normalize_atacadobrasil(self.PRODUCT)
+        record_history(connection, ATACADO_BR, [dict(product, preco=280)])
+
+        summaries = record_history(connection, ATACADO_BR, [product], rate=5.0)
+
+        self.assertEqual(
+            summaries,
+            ["PREÇO (Atacado Brasil): " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 10+ un.: US$ 270.00"],
+        )
+
+    def test_product_missing_from_list_is_out_of_stock_not_removed(self):
+        connection = open_database(Path(":memory:"))
+        product = normalize_atacadobrasil(self.PRODUCT)
+        other = dict(product, id="def", nome="Outro produto")
+        record_history(connection, ATACADO_BR, [product, other])
+
+        self.assertEqual(record_history(connection, ATACADO_BR, [other]), ["ESGOTOU (Atacado Brasil): " + product["nome"]])
+        self.assertEqual(record_history(connection, ATACADO_BR, [other]), [])
+        self.assertTrue(record_history(connection, ATACADO_BR, [product, other])[0].startswith("VOLTOU (Atacado Brasil)"))
 
 
 class HistoryTests(unittest.TestCase):

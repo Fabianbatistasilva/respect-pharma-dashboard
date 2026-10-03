@@ -34,8 +34,23 @@ from monitor import (
 SHAPE = "shapetotal"
 BYP = "bypharmacon"
 ATACADO = "atacadoparaguai"
-STORES = (SHAPE, BYP, ATACADO)
-STORE_LABELS = {SHAPE: "Shape Total", BYP: "ByPharmacon", ATACADO: "Atacado Paraguai"}
+ATACADO_BR = "atacadobrasil"
+STORES = (SHAPE, BYP, ATACADO, ATACADO_BR)
+STORE_LABELS = {
+    SHAPE: "Shape Total",
+    BYP: "ByPharmacon",
+    ATACADO: "Atacado Paraguai",
+    ATACADO_BR: "Atacado Brasil",
+}
+# Lojas cuja lista só traz o que tem estoque: produto que some esgotou, não foi removido.
+STORES_HIDING_OUT_OF_STOCK = {ATACADO_BR}
+# Faixas de quantidade do Atacado Brasil: (campo da API, quantidade mínima).
+ATACADO_BR_TIERS = (("priceVarejoPlus", 3), ("priceAtacado", 5), ("priceAtacadoPlus", 10))
+PANEL_NOTES = [
+    "Atacado Brasil cobra por quantidade: o preço comparado é o de 1 a 2 unidades (Varejo). "
+    "As faixas de 3+, 5+ e 10+ unidades aparecem logo abaixo do preço; a vitrine do site mostra a de 10+.",
+    "No Atacado Brasil, produto sem estoque some da lista da loja; por isso ele aparece aqui como esgotado, não como removido.",
+]
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ComparadorLocal/1.0 (+personal-use)"
 
 DEFAULTS = {
@@ -59,7 +74,10 @@ DEFAULTS = {
     "atacado_category": "farma",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
     "atacado_rate_url": "https://atacadoparaguai.com.py/categoria-produto/farma/",
-    # Avisar no WhatsApp as mudanças do ByPharmacon e do Atacado Paraguai (o monitor já avisa as do Shape Total).
+    "atacadobrasil_api_url": "https://api.atacadobrasilpy.com/products",
+    "atacadobrasil_group": "medicamentos",
+    "atacadobrasil_rate_url": "https://api.atacadobrasilpy.com/exchange/rates",
+    # Avisar no WhatsApp as mudanças das outras lojas (o monitor já avisa as do Shape Total).
     "notify_changes": True,
     "max_alert_items": 30,
 }
@@ -226,6 +244,7 @@ STOPWORDS = {
     "caneta", "pen", "diluido", "liquido", "aquoso", "po", "polvo", "liofilizado",
     "sales", "tri", "deposteron", "somatropina",
     "agua", "without", "no", "dac", "glp1", "pack", "capsule", "tablets", "xt",
+    "peptideo", "peptide", "peptides", "liofilizada", "liofilizado",
 }
 
 
@@ -238,7 +257,7 @@ def clean_number(value: float) -> str:
 
 
 # Grafias diferentes da mesma marca.
-BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan", "musclepharm": "muscle"}
+BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan", "musclepharm": "muscle", "veltran": "veltrane"}
 
 
 def brand_key(brand: str) -> str:
@@ -322,6 +341,9 @@ def features(item: dict[str, Any]) -> dict[str, Any]:
 
     # A marca cadastrada nem sempre é confiável; a primeira palavra do nome costuma ser a marca.
     brands = {brand_key(item.get("marca", "")), brand_key(item["nome"])} - {""}
+    # Onde o nome começa pelo tipo do produto ("Peptídeo ZPHC ..."), só vale a marca cadastrada.
+    if item.get("marca_confiavel") and item.get("marca"):
+        brands = {brand_key(item["marca"])}
 
     return {
         "brands": brands,
@@ -649,6 +671,76 @@ def fetch_atacado_rate(url: str, timeout: int) -> float:
     return rate
 
 
+def normalize_atacadobrasil(product: dict[str, Any]) -> dict[str, Any]:
+    price = number(product.get("price"))
+    tiers = [
+        {"min": minimum, "preco": number(product.get(field))}
+        for field, minimum in ATACADO_BR_TIERS
+        if number(product.get(field)) > 0 and number(product.get(field)) != price
+    ]
+    stock = integer(product.get("effectiveStock"))
+    return {
+        "loja": ATACADO_BR,
+        "id": str(product.get("id") or ""),
+        "nome": str(product.get("name") or "").replace("–", "-").strip(),
+        "marca": str((product.get("brand") or {}).get("name") or "").strip(),
+        "marca_confiavel": True,
+        "categoria": str((product.get("category") or {}).get("name") or "").strip(),
+        "detalhe": "",
+        "apresentacao": "",
+        "quantidade": "",
+        "dose": "",
+        # Preço de 1 a 2 unidades (Varejo): o comparável com as outras lojas.
+        "preco": price,
+        "preco_original": None,
+        "atacado": tiers,
+        "estoque": stock,
+        "estoque_detalhe": "",
+        "disponivel": stock > 0 and bool(product.get("active", True)),
+        "url": f"https://atacadobrasilpy.com/product/{product.get('slug') or ''}",
+    }
+
+
+def fetch_atacadobrasil(url: str, group: str, timeout: int) -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    page, last_page = 1, 1
+    while page <= min(last_page, 30):
+        request = urllib.request.Request(
+            f"{url}?group={group}&limit=500&page={page}",
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("Resposta do Atacado Brasil não contém a lista 'data'.")
+        products.extend(payload["data"])
+        last_page = integer((payload.get("meta") or {}).get("lastPage"), 1)
+        page += 1
+
+    items = {item["id"]: item for item in map(normalize_atacadobrasil, products) if item["id"] and item["nome"]}
+    if len(items) < 30:
+        raise ValueError(f"Catálogo do Atacado Brasil suspeito: somente {len(items)} produtos.")
+    return list(items.values())
+
+
+def fetch_atacadobrasil_rate(url: str, timeout: int) -> float:
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        rate = number(json.load(response).get("brl"))
+    if not 1 < rate < 20:
+        raise ValueError("Resposta de câmbio do Atacado Brasil sem cotação em reais.")
+    return rate
+
+
+def alert_value(item: dict[str, Any], rate: float) -> str:
+    """Valor para os avisos; onde há desconto por quantidade, diz de quantas unidades é cada preço."""
+    tiers = item.get("atacado") or []
+    if not tiers:
+        return format_value(item["preco"], rate)
+    best = min(tiers, key=lambda tier: tier["preco"])
+    return f"1 un.: {format_value(item['preco'], rate)} · {best['min']}+ un.: {format_price(best['preco'])}"
+
+
 def fetch_bypharmacon_rate(url: str, publishable_key: str, timeout: int) -> float:
     request = urllib.request.Request(
         url,
@@ -731,30 +823,33 @@ def record_history(
             continue
         if before is None or was_removed:
             kind = "VOLTOU AO CATÁLOGO" if was_removed else "NOVO"
-            summaries.append(f"{kind} ({label}): {item['nome']} — {format_value(item['preco'], rate)}")
+            summaries.append(f"{kind} ({label}): {item['nome']} — {alert_value(item, rate)}")
             continue
         if before["preco"] != item["preco"]:
             summaries.append(
-                f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {format_value(item['preco'], rate)}"
+                f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {alert_value(item, rate)}"
             )
         if bool(before["disponivel"]) != item["disponivel"]:
             if item["disponivel"]:
-                summaries.append(f"VOLTOU ({label}): {item['nome']} — {format_value(item['preco'], rate)}")
+                summaries.append(f"VOLTOU ({label}): {item['nome']} — {alert_value(item, rate)}")
             else:
                 summaries.append(f"ESGOTOU ({label}): {item['nome']}")
 
     current_ids = {item["id"] for item in items}
+    hides_out_of_stock = store in STORES_HIDING_OUT_OF_STOCK
     active = [row for row in previous.values() if not row["removido"]]
+    if hides_out_of_stock:
+        active = [row for row in active if row["disponivel"]]
     gone = [row for row in active if row["produto_id"] not in current_ids]
     # Muitos sumindo de uma vez é resposta incompleta da loja, não remoção: espera a próxima coleta.
     if gone and len(gone) <= max(10, 0.3 * len(active)):
         for row in gone:
             connection.execute(
                 "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, removido) "
-                "VALUES(?, ?, ?, ?, 0, ?, 1)",
-                (store, row["produto_id"], row["nome"], row["preco"], seen_at),
+                "VALUES(?, ?, ?, ?, 0, ?, ?)",
+                (store, row["produto_id"], row["nome"], row["preco"], seen_at, 0 if hides_out_of_stock else 1),
             )
-            summaries.append(f"REMOVIDO ({label}): {row['nome']}")
+            summaries.append(f"{'ESGOTOU' if hides_out_of_stock else 'REMOVIDO'} ({label}): {row['nome']}")
     return summaries
 
 
@@ -868,6 +963,7 @@ def build_panel_data(
         "mudancas": changes,
         "historico": history,
         "atualizar_url": refresh_url,
+        "notas": PANEL_NOTES,
     }
 
 
@@ -896,8 +992,10 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         if not shape_items:
             errors.append("Shape Total: o monitor ainda não salvou o catálogo.")
 
-    items_by_store: dict[str, list[dict[str, Any]]] = {SHAPE: shape_items, BYP: [], ATACADO: []}
-    own_rates = {SHAPE: shape_rate, BYP: 0.0, ATACADO: 0.0}
+    items_by_store: dict[str, list[dict[str, Any]]] = {store: [] for store in STORES}
+    items_by_store[SHAPE] = shape_items
+    own_rates = {store: 0.0 for store in STORES}
+    own_rates[SHAPE] = shape_rate
     fixed_rate = number(settings["cotacao_fixa"])
     sources = {
         BYP: (
@@ -909,6 +1007,10 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         ATACADO: (
             lambda: fetch_atacado(settings["atacado_api_url"], settings["atacado_category"], timeout),
             lambda: fetch_atacado_rate(settings["atacado_rate_url"], timeout),
+        ),
+        ATACADO_BR: (
+            lambda: fetch_atacadobrasil(settings["atacadobrasil_api_url"], settings["atacadobrasil_group"], timeout),
+            lambda: fetch_atacadobrasil_rate(settings["atacadobrasil_rate_url"], timeout),
         ),
     }
     for store, (fetch_items, fetch_rate) in sources.items():
@@ -969,7 +1071,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Comparador de preços Shape Total x ByPharmacon x Atacado Paraguai")
+    parser = argparse.ArgumentParser(description="Comparador de preços entre as lojas")
     parser.add_argument("--config", default="config.json", help="Caminho do arquivo de configuração")
     parser.add_argument("--sem-alertas", action="store_true", help="Atualiza o painel sem enviar WhatsApp")
     parser.add_argument("--abrir", action="store_true", help="Abre o painel no navegador ao terminar")
