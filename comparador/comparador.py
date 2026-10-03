@@ -68,6 +68,8 @@ DEFAULTS = {
     "min_score": 0.62,
     # Dias de histórico de preços guardados no banco; o que for mais antigo é apagado.
     "history_days": 90,
+    # Queda de preço (em %) que vira mensagem avulsa de PROMO no grupo.
+    "promo_drop_percent": 20,
     # Endereço aberto pelo botão "Coletar agora" do painel (na versão publicada, a página do workflow).
     "refresh_url": None,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
@@ -780,6 +782,10 @@ def open_database(path: Path) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             resumo TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS mensagens_avulsas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            texto TEXT NOT NULL
+        );
         """
     )
     columns = {row[1] for row in connection.execute("PRAGMA table_info(historico)")}
@@ -814,8 +820,28 @@ def last_states(connection: sqlite3.Connection, store: str) -> dict[str, sqlite3
     return {row["produto_id"]: row for row in rows}
 
 
+def promo_message(store: str, item: dict[str, Any], before_price: float, rate: float) -> str:
+    """Mensagem avulsa de promoção: preço anterior, preço atual e a queda."""
+    drop = (before_price - item["preco"]) / before_price * 100
+    lines = [
+        f"🔥 *PROMO* · {STORE_LABELS[store]}",
+        item["nome"],
+        f"De {format_value(before_price, rate)} por *{format_value(item['preco'], rate)}* (-{drop:.0f}%)",
+    ]
+    tiers = item.get("atacado") or []
+    if tiers:
+        best = min(tiers, key=lambda tier: tier["preco"])
+        lines.append(f"Preço de 1 unidade · {best['min']}+ un.: {format_value(best['preco'], rate)}")
+    return "\n".join(lines)
+
+
 def record_history(
-    connection: sqlite3.Connection, store: str, items: list[dict[str, Any]], rate: float = 0
+    connection: sqlite3.Connection,
+    store: str,
+    items: list[dict[str, Any]],
+    rate: float = 0,
+    promos: list[str] | None = None,
+    promo_drop_percent: float = 20,
 ) -> list[str]:
     """Grava uma linha quando preço ou disponibilidade mudam, ou o produto sai do catálogo; devolve o resumo."""
     previous = last_states(connection, store)
@@ -854,6 +880,9 @@ def record_history(
             summaries.append(
                 f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {alert_value(item, rate)}"
             )
+            dropped = before["preco"] > 0 and (before["preco"] - item["preco"]) / before["preco"] * 100 >= promo_drop_percent
+            if promos is not None and dropped and item["disponivel"]:
+                promos.append(promo_message(store, item, before["preco"], rate))
         if bool(before["disponivel"]) != item["disponivel"]:
             if item["disponivel"]:
                 summaries.append(f"VOLTOU ({label}): {item['nome']} — {alert_value(item, rate)}")
@@ -953,6 +982,20 @@ def deliver_alerts(
         logger.info("Alerta do comparador enviado ao servidor do WhatsApp.")
     connection.executemany("DELETE FROM alertas_pendentes WHERE id = ?", [(row["id"],) for row in rows])
     connection.commit()
+
+
+def deliver_single_messages(connection: sqlite3.Connection, config: dict[str, Any], logger: logging.Logger) -> None:
+    """Envia, uma por uma, as mensagens que não entram no aviso agrupado (as de PROMO)."""
+    for row in list(connection.execute("SELECT * FROM mensagens_avulsas ORDER BY id LIMIT 20")):
+        logger.info("Mensagem avulsa:\n%s", row["texto"])
+        if config.get("whatsapp", {}).get("enabled", False):
+            try:
+                send_whatsapp(config, row["texto"])
+            except Exception:
+                logger.exception("Falha ao enviar mensagem avulsa; será tentado novamente.")
+                return
+        connection.execute("DELETE FROM mensagens_avulsas WHERE id = ?", (row["id"],))
+        connection.commit()
 
 
 PUBLIC_FIELDS = (
@@ -1063,16 +1106,21 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         rates = {store: own_rates[store] or fallback for store in STORES}
 
     summaries: list[str] = []
+    # Promoções valem para as quatro lojas, inclusive o Shape Total (cujos outros avisos vêm do monitor).
+    promos: list[str] = []
     for store in STORES:
         if not items_by_store[store]:
             continue  # coleta falhou: sem lista, não dá para saber o que mudou ou foi removido
-        changes = record_history(connection, store, items_by_store[store], rates[store])
+        changes = record_history(
+            connection, store, items_by_store[store], rates[store], promos, number(settings["promo_drop_percent"], 20)
+        )
         if store != SHAPE:
             summaries.extend(changes)
     pruned = prune_history(connection, integer(settings["history_days"], 90))
     notify = settings.get("notify_bypharmacon_changes", settings["notify_changes"])
     if send_alerts and notify:
         connection.executemany("INSERT INTO alertas_pendentes(resumo) VALUES(?)", [(text,) for text in summaries])
+        connection.executemany("INSERT INTO mensagens_avulsas(texto) VALUES(?)", [(text,) for text in promos])
     connection.commit()
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))
@@ -1095,6 +1143,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     )
     if send_alerts:
         deliver_alerts(connection, config, logger, integer(settings["max_alert_items"], 30))
+        deliver_single_messages(connection, config, logger)
     connection.close()
     return 1 if errors else 0
 

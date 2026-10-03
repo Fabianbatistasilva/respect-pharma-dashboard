@@ -285,6 +285,38 @@ class HistoryTests(unittest.TestCase):
             ],
         )
 
+    def test_price_drop_of_20_percent_creates_a_separate_promo_message(self):
+        connection = open_database(Path(":memory:"))
+        record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=100), item(BYP, "b", "Produto B", "Marca", price=100)])
+        promos = []
+
+        record_history(
+            connection,
+            BYP,
+            [item(BYP, "a", "Produto A", "Marca", price=80), item(BYP, "b", "Produto B", "Marca", price=81)],
+            rate=5.0,
+            promos=promos,
+        )
+
+        self.assertEqual(
+            promos,
+            ["🔥 *PROMO* · ByPharmacon\nProduto A\nDe US$ 100.00 (R$ 500,00) por *US$ 80.00 (R$ 400,00)* (-20%)"],
+        )
+
+    def test_no_promo_for_out_of_stock_or_price_increase(self):
+        connection = open_database(Path(":memory:"))
+        record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=100), item(BYP, "b", "Produto B", "Marca", price=100)])
+        promos = []
+
+        record_history(
+            connection,
+            BYP,
+            [item(BYP, "a", "Produto A", "Marca", price=50, disponivel=False), item(BYP, "b", "Produto B", "Marca", price=150)],
+            promos=promos,
+        )
+
+        self.assertEqual(promos, [])
+
     def test_removed_product_is_reported_once_and_again_when_it_returns(self):
         connection = open_database(Path(":memory:"))
         both = [item(BYP, "a", "Produto A", "Marca"), item(BYP, "b", "Produto B", "Marca")]
