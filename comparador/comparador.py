@@ -1003,12 +1003,12 @@ def deliver_single_messages(connection: sqlite3.Connection, config: dict[str, An
 
 PUBLIC_FIELDS = (
     "loja", "id", "nome", "marca", "categoria", "detalhe", "preco", "preco_original",
-    "atacado", "estoque", "estoque_detalhe", "disponivel", "url",
+    "atacado", "estoque", "estoque_detalhe", "disponivel", "url", "apresentacao", "quantidade", "dose",
 )
 
 
 def public_item(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: item[key] for key in PUBLIC_FIELDS}
+    return {key: item.get(key, "") for key in PUBLIC_FIELDS}
 
 
 def build_panel_data(
