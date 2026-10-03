@@ -17,6 +17,7 @@ from typing import Any
 from monitor import (
     fetch_catalog,
     format_price,
+    format_value,
     integer,
     iso_now,
     load_config,
@@ -703,7 +704,9 @@ def last_states(connection: sqlite3.Connection, store: str) -> dict[str, sqlite3
     return {row["produto_id"]: row for row in rows}
 
 
-def record_history(connection: sqlite3.Connection, store: str, items: list[dict[str, Any]]) -> list[str]:
+def record_history(
+    connection: sqlite3.Connection, store: str, items: list[dict[str, Any]], rate: float = 0
+) -> list[str]:
     """Grava uma linha quando preço ou disponibilidade mudam, ou o produto sai do catálogo; devolve o resumo."""
     previous = last_states(connection, store)
     seen_at = iso_now()
@@ -728,15 +731,17 @@ def record_history(connection: sqlite3.Connection, store: str, items: list[dict[
             continue
         if before is None or was_removed:
             kind = "VOLTOU AO CATÁLOGO" if was_removed else "NOVO"
-            summaries.append(f"{kind} ({label}): {item['nome']} — {format_price(item['preco'])}")
+            summaries.append(f"{kind} ({label}): {item['nome']} — {format_value(item['preco'], rate)}")
             continue
         if before["preco"] != item["preco"]:
             summaries.append(
-                f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {format_price(item['preco'])}"
+                f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {format_value(item['preco'], rate)}"
             )
         if bool(before["disponivel"]) != item["disponivel"]:
-            status = "VOLTOU" if item["disponivel"] else "ESGOTOU"
-            summaries.append(f"{status} ({label}): {item['nome']}")
+            if item["disponivel"]:
+                summaries.append(f"VOLTOU ({label}): {item['nome']} — {format_value(item['preco'], rate)}")
+            else:
+                summaries.append(f"ESGOTOU ({label}): {item['nome']}")
 
     current_ids = {item["id"] for item in items}
     active = [row for row in previous.values() if not row["removido"]]
@@ -930,7 +935,7 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     for store in STORES:
         if not items_by_store[store]:
             continue  # coleta falhou: sem lista, não dá para saber o que mudou ou foi removido
-        changes = record_history(connection, store, items_by_store[store])
+        changes = record_history(connection, store, items_by_store[store], rates[store])
         if store != SHAPE:
             summaries.extend(changes)
     pruned = prune_history(connection, integer(settings["history_days"], 90))

@@ -189,6 +189,20 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual([point[1:] for point in points], [[10, 1], [12, 0]])
 
 
+    def test_price_and_restock_alerts_carry_the_value_in_both_currencies(self):
+        connection = open_database(Path(":memory:"))
+        record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=10, disponivel=False)])
+
+        summaries = record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=12)], rate=5.5)
+
+        self.assertEqual(
+            summaries,
+            [
+                "PREÇO (ByPharmacon): Produto A — US$ 10.00 → US$ 12.00 (R$ 66,00)",
+                "VOLTOU (ByPharmacon): Produto A — US$ 12.00 (R$ 66,00)",
+            ],
+        )
+
     def test_removed_product_is_reported_once_and_again_when_it_returns(self):
         connection = open_database(Path(":memory:"))
         both = [item(BYP, "a", "Produto A", "Marca"), item(BYP, "b", "Produto B", "Marca")]

@@ -45,6 +45,15 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assertIn("US$ 10.00 → US$ 12.00", changes[0]["summary"])
         self.assertIn("VOLTOU CDE", changes[1]["summary"])
 
+    def test_restock_and_price_alerts_include_value_in_reais_when_rate_is_known(self):
+        before = {1: product(price=10, cde=0)}
+        after = {1: product(price=12, cde=5)}
+
+        changes = detect_product_changes(before, after, self.watch, rate=5.25)
+
+        self.assertIn("US$ 10.00 → US$ 12.00 (R$ 63,00)", changes[0]["summary"])
+        self.assertIn("VOLTOU CDE: Produto — US$ 12.00 (R$ 63,00)", changes[1]["summary"])
+
     def test_quantity_change_is_ignored_in_availability_mode(self):
         before = {1: product(cde=3)}
         after = {1: product(cde=7)}

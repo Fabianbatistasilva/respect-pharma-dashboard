@@ -73,6 +73,14 @@ def format_price(value: float) -> str:
     return f"US$ {value:.2f}"
 
 
+def format_value(value: float, rate: float = 0) -> str:
+    """Preço em dólar e, quando há cotação do dia, também em reais."""
+    if rate <= 0:
+        return format_price(value)
+    reais = f"{value * rate:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{format_price(value)} (R$ {reais})"
+
+
 def is_watched(product: dict[str, Any], watch: dict[str, Any]) -> bool:
     if not watch.get("only_watchlist", False):
         return True
@@ -103,6 +111,7 @@ def detect_product_changes(
     previous: dict[int, dict[str, Any]],
     current: dict[int, dict[str, Any]],
     watch: dict[str, Any],
+    rate: float = 0,
 ) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
 
@@ -113,7 +122,7 @@ def detect_product_changes(
                 changes.append(
                     event(
                         "new_product",
-                        f"NOVO: {product['nombre']} — {format_price(product['precio'])}",
+                        f"NOVO: {product['nombre']} — {format_value(product['precio'], rate)}",
                         product_id,
                         {"current": product},
                     )
@@ -142,7 +151,7 @@ def detect_product_changes(
             changes.append(
                 event(
                     "price_change",
-                    f"PREÇO: {after['nombre']} — {format_price(before['precio'])} → {format_price(after['precio'])}",
+                    f"PREÇO: {after['nombre']} — {format_price(before['precio'])} → {format_value(after['precio'], rate)}",
                     product_id,
                     {"before": before["precio"], "after": after["precio"]},
                 )
@@ -166,10 +175,11 @@ def detect_product_changes(
                 )
             elif mode != "any" and (old_stock > 0) != (new_stock > 0):
                 status = "VOLTOU" if new_stock > 0 else "ESGOTOU"
+                value = f" — {format_value(after['precio'], rate)}" if new_stock > 0 else ""
                 changes.append(
                     event(
                         "stock_availability",
-                        f"{status} {branch}: {after['nombre']}",
+                        f"{status} {branch}: {after['nombre']}{value}",
                         product_id,
                         {"branch": branch, "before": old_stock, "after": new_stock},
                     )
@@ -506,7 +516,7 @@ def run_monitor(config_path: Path) -> int:
     watch = config.get("watch", {})
 
     if baseline_exists:
-        changes.extend(detect_product_changes(previous, products, watch))
+        changes.extend(detect_product_changes(previous, products, watch, number(payload.get("cotizacion"))))
     changes.extend(metadata_changes(connection, payload, watch, baseline_exists))
     if baseline_exists:
         changes.extend(
