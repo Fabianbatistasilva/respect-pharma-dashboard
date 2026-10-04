@@ -231,7 +231,7 @@ const grupos = D.grupos.map((grupo, indice) => {
     texto: norm(itens.map((p) => [p.nome, p.marca, p.detalhe].join(' ')).join(' ')),
   };
 });
-const produtos = D.produtos.map((p, indice) => ({...p, indice, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe].join(' '))}));
+const produtos = D.produtos.map((p, indice) => ({...p, indice, marcaKey: marcaChave(p), cat: norm(p.categoria), texto: norm([p.nome, p.marca, p.categoria, p.detalhe, p.codigo].join(' '))}));
 const contar = (lista, campo) => lista.reduce((acc, item) => (acc[item[campo]] = (acc[item[campo]] || 0) + 1, acc), {});
 const opcoesMarca = (lista, campo) => Object.entries(contar(lista, campo))
   .map(([key, n]) => [key, `${marcaRotulo(key)} (${n})`]).sort((a, b) => a[1].localeCompare(b[1]));
@@ -305,7 +305,7 @@ function renderPares() {
       ? '<span class="tag">mesmo preço</span>'
       : `<span class="tag win-tag">${esc(D.lojas[grupo.vencedor])}</span>`;
     const nomes = grupo.lista.map((p) =>
-      `<div class="nome" title="ID ${esc(D.lojas[p.loja])}: ${esc(p.id)}"><div class="loja">${esc(D.lojas[p.loja])}</div>${esc(p.nome)}</div>`).join('');
+      `<div class="nome" title="ID ${esc(D.lojas[p.loja])}: ${esc(p.id)}"><div class="loja">${esc(D.lojas[p.loja])} · ${esc(p.codigo)}</div>${esc(p.nome)}</div>`).join('');
     return `<tr>
       <td>${nomes}<button type="button" class="link" data-grupo="${grupo.indice}">Ver evolução do preço</button></td>
       <td>${esc(grupo.marcaNome)}</td>
@@ -327,7 +327,7 @@ function renderProdutos() {
     : order === 'asc' ? (a, b) => valor(a) - valor(b) : (a, b) => valor(b) - valor(a));
   $('t-contagem').textContent = rows.length + ' produtos' + (rows.length > LIMITE ? ` (mostrando os primeiros ${LIMITE}; refine a busca)` : '');
   $('t-corpo').innerHTML = rows.slice(0, LIMITE).map((p) => `<tr>
-      <td><div title="ID: ${esc(p.id)}">${esc(p.nome)}</div>${p.detalhe ? `<div class="sub">${esc(p.detalhe)}</div>` : ''}<button type="button" class="link" data-produto="${p.indice}">Ver evolução do preço</button></td>
+      <td><div class="loja">${esc(p.codigo)}</div><div title="ID: ${esc(p.id)}">${esc(p.nome)}</div>${p.detalhe ? `<div class="sub">${esc(p.detalhe)}</div>` : ''}<button type="button" class="link" data-produto="${p.indice}">Ver evolução do preço</button></td>
       <td>${esc(p.marca)}</td><td>${esc(p.categoria)}</td>
       <td><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(D.lojas[p.loja])}</a></td>
       <td class="num"><span class="price">${dinheiro(valor(p))}</span>${p.preco_original ? ` <s>${dinheiro(valor(p, p.preco_original))}</s>` : ''}${temReais ? `<div class="sub">${usd(p.preco)}</div>` : ''}</td>

@@ -17,6 +17,7 @@ from comparador import (
     normalize_atacado,
     normalize_atacadobrasil,
     normalize_bypharmacon,
+    ensure_unique_codes,
     open_database,
     price_changes,
     prune_history,
@@ -214,7 +215,7 @@ class AtacadoBrasilTests(unittest.TestCase):
 
         self.assertEqual(
             summaries,
-            ["PREÇO (Atacado Brasil): " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 10+ un.: US$ 270.00"],
+            ["PREÇO (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 10+ un.: US$ 270.00"],
         )
 
     def test_quantity_tier_change_is_reported_when_unit_price_stays(self):
@@ -225,7 +226,7 @@ class AtacadoBrasilTests(unittest.TestCase):
 
         summaries = record_history(connection, ATACADO_BR, [cheaper_wholesale])
 
-        self.assertEqual(summaries, ["FAIXAS (Atacado Brasil): " + product["nome"] + " — 10+ un.: US$ 270.00 → US$ 265.00"])
+        self.assertEqual(summaries, ["FAIXAS (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — 10+ un.: US$ 270.00 → US$ 265.00"])
         self.assertEqual(record_history(connection, ATACADO_BR, [cheaper_wholesale]), [])
 
     def test_history_from_before_tier_tracking_does_not_trigger_alerts(self):
@@ -246,9 +247,36 @@ class AtacadoBrasilTests(unittest.TestCase):
         other = dict(product, id="def", nome="Outro produto")
         record_history(connection, ATACADO_BR, [product, other])
 
-        self.assertEqual(record_history(connection, ATACADO_BR, [other]), ["ESGOTOU (Atacado Brasil): " + product["nome"]])
+        self.assertEqual(record_history(connection, ATACADO_BR, [other]), ["ESGOTOU (Atacado Brasil): " + "[AB-ABC] " + product["nome"]])
         self.assertEqual(record_history(connection, ATACADO_BR, [other]), [])
         self.assertTrue(record_history(connection, ATACADO_BR, [product, other])[0].startswith("VOLTOU (Atacado Brasil)"))
+
+
+class CodeTests(unittest.TestCase):
+    def test_each_store_gets_its_own_prefix_and_number(self):
+        byp = normalize_bypharmacon({"id": "prod_1", "name": "Produto", "sku": "3605", "priceRetail": 10, "inStock": True})
+        atacado = normalize_atacado({"id": 45220, "name": "Produto", "prices": {"price": "100", "currency_code": "USD"}})
+        brasil = normalize_atacadobrasil({"id": "uuid", "legacyCode": "B-3239", "name": "Produto", "price": "10", "effectiveStock": 1})
+
+        self.assertEqual([byp["codigo"], atacado["codigo"], brasil["codigo"]], ["BY-3605", "AP-45220", "AB-3239"])
+
+    def test_repeated_number_never_gives_two_products_the_same_code(self):
+        items = [dict(item(BYP, "b", "Produto B", "Marca"), codigo="BY-10"), dict(item(BYP, "a", "Produto A", "Marca"), codigo="BY-10")]
+
+        ensure_unique_codes(items)
+
+        self.assertEqual(sorted(entry["codigo"] for entry in items), ["BY-10", "BY-10-2"])
+
+    def test_alerts_carry_the_code_and_it_survives_removal(self):
+        connection = open_database(Path(":memory:"))
+        product = dict(item(BYP, "a", "Produto A", "Marca", price=10), codigo="BY-3605")
+        record_history(connection, BYP, [product, item(BYP, "b", "Produto B", "Marca")])
+
+        changed = record_history(connection, BYP, [dict(product, preco=12), item(BYP, "b", "Produto B", "Marca")])
+        removed = record_history(connection, BYP, [item(BYP, "b", "Produto B", "Marca")])
+
+        self.assertEqual(changed, ["PREÇO (ByPharmacon): [BY-3605] Produto A — US$ 10.00 → US$ 12.00"])
+        self.assertEqual(removed, ["REMOVIDO (ByPharmacon): [BY-3605] Produto A"])
 
 
 class HistoryTests(unittest.TestCase):

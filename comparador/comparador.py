@@ -42,6 +42,8 @@ STORE_LABELS = {
     ATACADO: "Atacado Paraguai",
     ATACADO_BR: "Atacado Brasil",
 }
+# Código de cada produto: prefixo da loja + o número que a própria loja usa (ST-1396, BY-3605, AP-45220, AB-3239).
+CODE_PREFIX = {SHAPE: "ST", BYP: "BY", ATACADO: "AP", ATACADO_BR: "AB"}
 # Lojas cuja lista só traz o que tem estoque: produto que some esgotou, não foi removido.
 STORES_HIDING_OUT_OF_STOCK = {ATACADO_BR}
 # Faixas de quantidade do Atacado Brasil: (campo da API, quantidade mínima).
@@ -502,6 +504,25 @@ def match_products(
     return matches
 
 
+def product_code(store: str, number_in_store: Any) -> str:
+    return f"{CODE_PREFIX[store]}-{str(number_in_store).strip().upper()}"
+
+
+def ensure_unique_codes(items: list[dict[str, Any]]) -> None:
+    """Dois produtos nunca ficam com o mesmo código: se a loja repetir um número, o segundo ganha um sufixo."""
+    seen: dict[str, int] = {}
+    for item in sorted(items, key=lambda item: item["id"]):
+        code = item.get("codigo") or product_code(item["loja"], item["id"])
+        seen[code] = seen.get(code, 0) + 1
+        item["codigo"] = code if seen[code] == 1 else f"{code}-{seen[code]}"
+
+
+def named(item: Any) -> str:
+    """Nome do produto com o código na frente, como aparece nas mensagens: "[ST-1396] ACNECUR"."""
+    code = item["codigo"] if "codigo" in item.keys() else None
+    return f"[{code}] {item['nome']}" if code else item["nome"]
+
+
 def load_shape_items(monitor_database: Path) -> tuple[list[dict[str, Any]], float]:
     """Lê o catálogo e a cotação que o monitor acabou de salvar, sem consultar o site de novo."""
     if not monitor_database.exists():
@@ -542,6 +563,7 @@ def build_shape_items(products: list[dict[str, Any]], promo_list: list[Any]) -> 
             {
                 "loja": SHAPE,
                 "id": str(product["id"]),
+                "codigo": product_code(SHAPE, product["id"]),
                 "nome": product["nombre"],
                 "marca": product.get("marca", ""),
                 "categoria": product.get("categoria", ""),
@@ -577,6 +599,7 @@ def normalize_bypharmacon(product: dict[str, Any]) -> dict[str, Any]:
     return {
         "loja": BYP,
         "id": str(product.get("id") or ""),
+        "codigo": product_code(BYP, product.get("sku") or str(product.get("id") or "")[-6:]),
         "nome": str(product.get("name") or "").strip(),
         "marca": str(product.get("brand") or "").strip(),
         "categoria": str(product.get("category") or "").strip(),
@@ -621,6 +644,7 @@ def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
     return {
         "loja": ATACADO,
         "id": str(product.get("id") or ""),
+        "codigo": product_code(ATACADO, product.get("id")),
         "nome": html.unescape(str(product.get("name") or "")).replace("–", "-").strip(),
         "marca": html.unescape(str(brands[0].get("name") or "")).strip() if brands else "",
         "categoria": "Estética" if "Estética" in categories else "Farma",
@@ -687,6 +711,8 @@ def normalize_atacadobrasil(product: dict[str, Any]) -> dict[str, Any]:
     return {
         "loja": ATACADO_BR,
         "id": str(product.get("id") or ""),
+        # A loja chama de "B-3239"; aqui vira AB-3239 para não se confundir com o ByPharmacon.
+        "codigo": product_code(ATACADO_BR, str(product.get("legacyCode") or "").split("-")[-1] or str(product.get("id") or "")[:6]),
         "nome": str(product.get("name") or "").replace("–", "-").strip(),
         "marca": str((product.get("brand") or {}).get("name") or "").strip(),
         "marca_confiavel": True,
@@ -778,7 +804,8 @@ def open_database(path: Path) -> sqlite3.Connection:
             disponivel INTEGER NOT NULL,
             visto_em TEXT NOT NULL,
             removido INTEGER NOT NULL DEFAULT 0,
-            faixas TEXT
+            faixas TEXT,
+            codigo TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_historico_produto ON historico(loja, produto_id, id);
         CREATE TABLE IF NOT EXISTS alertas_pendentes (
@@ -796,6 +823,8 @@ def open_database(path: Path) -> sqlite3.Connection:
         connection.execute("ALTER TABLE historico ADD COLUMN removido INTEGER NOT NULL DEFAULT 0")
     if "faixas" not in columns:
         connection.execute("ALTER TABLE historico ADD COLUMN faixas TEXT")
+    if "codigo" not in columns:
+        connection.execute("ALTER TABLE historico ADD COLUMN codigo TEXT")
     return connection
 
 
@@ -828,7 +857,7 @@ def promo_message(store: str, item: dict[str, Any], before_price: float, rate: f
     drop = (before_price - item["preco"]) / before_price * 100
     lines = [
         f"🔥 *PROMO* · {STORE_LABELS[store]}",
-        item["nome"],
+        named(item),
         f"De {format_value(before_price, rate)} por *{format_value(item['preco'], rate)}* (-{drop:.0f}%)",
     ]
     tiers = item.get("atacado") or []
@@ -864,37 +893,40 @@ def record_history(
             and before["preco"] == item["preco"]
             and bool(before["disponivel"]) == item["disponivel"]
         )
+        code = item.get("codigo")
         if unchanged and not tiers_changed:
             if before_tiers is None:
                 connection.execute("UPDATE historico SET faixas = ? WHERE id = ?", (tiers, before["id"]))
+            if code and before["codigo"] != code:
+                connection.execute("UPDATE historico SET codigo = ? WHERE id = ?", (code, before["id"]))
             continue
         connection.execute(
-            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, faixas) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (store, item["id"], item["nome"], item["preco"], int(item["disponivel"]), seen_at, tiers),
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, faixas, codigo) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (store, item["id"], item["nome"], item["preco"], int(item["disponivel"]), seen_at, tiers, code),
         )
         if not previous:
             continue
         if before is None or was_removed:
             kind = "VOLTOU AO CATÁLOGO" if was_removed else "NOVO"
-            summaries.append(f"{kind} ({label}): {item['nome']} — {alert_value(item, rate)}")
+            summaries.append(f"{kind} ({label}): {named(item)} — {alert_value(item, rate)}")
             continue
         if before["preco"] != item["preco"]:
             summaries.append(
-                f"PREÇO ({label}): {item['nome']} — {format_price(before['preco'])} → {alert_value(item, rate)}"
+                f"PREÇO ({label}): {named(item)} — {format_price(before['preco'])} → {alert_value(item, rate)}"
             )
             dropped = before["preco"] > 0 and (before["preco"] - item["preco"]) / before["preco"] * 100 >= promo_drop_percent
             if promos is not None and dropped and item["disponivel"]:
                 promos.append(promo_message(store, item, before["preco"], rate))
         if bool(before["disponivel"]) != item["disponivel"]:
             if item["disponivel"]:
-                summaries.append(f"VOLTOU ({label}): {item['nome']} — {alert_value(item, rate)}")
+                summaries.append(f"VOLTOU ({label}): {named(item)} — {alert_value(item, rate)}")
             else:
-                summaries.append(f"ESGOTOU ({label}): {item['nome']}")
+                summaries.append(f"ESGOTOU ({label}): {named(item)}")
         # Com o preço de 1 unidade igual, a mudança foi só no desconto por quantidade.
         if tiers_changed and before["preco"] == item["preco"] and item["disponivel"]:
             details = describe_tier_changes(json.loads(before_tiers), item.get("atacado") or [])
-            summaries.append(f"FAIXAS ({label}): {item['nome']} — {details}")
+            summaries.append(f"FAIXAS ({label}): {named(item)} — {details}")
 
     current_ids = {item["id"] for item in items}
     hides_out_of_stock = store in STORES_HIDING_OUT_OF_STOCK
@@ -906,11 +938,11 @@ def record_history(
     if gone and len(gone) <= max(10, 0.3 * len(active)):
         for row in gone:
             connection.execute(
-                "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, removido) "
-                "VALUES(?, ?, ?, ?, 0, ?, ?)",
-                (store, row["produto_id"], row["nome"], row["preco"], seen_at, 0 if hides_out_of_stock else 1),
+                "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, removido, codigo) "
+                "VALUES(?, ?, ?, ?, 0, ?, ?, ?)",
+                (store, row["produto_id"], row["nome"], row["preco"], seen_at, 0 if hides_out_of_stock else 1, row["codigo"]),
             )
-            summaries.append(f"{'ESGOTOU' if hides_out_of_stock else 'REMOVIDO'} ({label}): {row['nome']}")
+            summaries.append(f"{'ESGOTOU' if hides_out_of_stock else 'REMOVIDO'} ({label}): {named(row)}")
     return summaries
 
 
@@ -1003,7 +1035,7 @@ def deliver_single_messages(connection: sqlite3.Connection, config: dict[str, An
 
 PUBLIC_FIELDS = (
     "loja", "id", "nome", "marca", "categoria", "detalhe", "preco", "preco_original",
-    "atacado", "estoque", "estoque_detalhe", "disponivel", "url", "apresentacao", "quantidade", "dose",
+    "atacado", "estoque", "estoque_detalhe", "disponivel", "url", "apresentacao", "quantidade", "dose", "codigo",
 )
 
 
@@ -1107,6 +1139,9 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         if fallback <= 0:
             errors.append("Nenhuma loja informou a cotação; defina 'cotacao_fixa' no config.json para ver valores em reais.")
         rates = {store: own_rates[store] or fallback for store in STORES}
+
+    for store_items in items_by_store.values():
+        ensure_unique_codes(store_items)
 
     summaries: list[str] = []
     # Promoções valem para as quatro lojas, inclusive o Shape Total (cujos outros avisos vêm do monitor).

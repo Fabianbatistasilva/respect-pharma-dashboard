@@ -122,7 +122,7 @@ def detect_product_changes(
                 changes.append(
                     event(
                         "new_product",
-                        f"NOVO: {product['nombre']} — {format_value(product['precio'], rate)}",
+                        f"NOVO: [ST-{product_id}] {product['nombre']} — {format_value(product['precio'], rate)}",
                         product_id,
                         {"current": product},
                     )
@@ -135,7 +135,7 @@ def detect_product_changes(
                 changes.append(
                     event(
                         "removed_product",
-                        f"REMOVIDO: {product['nombre']}",
+                        f"REMOVIDO: [ST-{product_id}] {product['nombre']}",
                         product_id,
                         {"previous": product},
                     )
@@ -151,7 +151,7 @@ def detect_product_changes(
             changes.append(
                 event(
                     "price_change",
-                    f"PREÇO: {after['nombre']} — {format_price(before['precio'])} → {format_value(after['precio'], rate)}",
+                    f"PREÇO: [ST-{product_id}] {after['nombre']} — {format_price(before['precio'])} → {format_value(after['precio'], rate)}",
                     product_id,
                     {"before": before["precio"], "after": after["precio"]},
                 )
@@ -168,7 +168,7 @@ def detect_product_changes(
                 changes.append(
                     event(
                         "stock_change",
-                        f"ESTOQUE {branch}: {after['nombre']} — {old_stock} → {new_stock}",
+                        f"ESTOQUE {branch}: [ST-{product_id}] {after['nombre']} — {old_stock} → {new_stock}",
                         product_id,
                         {"branch": branch, "before": old_stock, "after": new_stock},
                     )
@@ -179,7 +179,7 @@ def detect_product_changes(
                 changes.append(
                     event(
                         "stock_availability",
-                        f"{status} {branch}: {after['nombre']}{value}",
+                        f"{status} {branch}: [ST-{product_id}] {after['nombre']}{value}",
                         product_id,
                         {"branch": branch, "before": old_stock, "after": new_stock},
                     )

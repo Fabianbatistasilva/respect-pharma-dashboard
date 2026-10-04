@@ -52,7 +52,7 @@ class ChangeDetectionTests(unittest.TestCase):
         changes = detect_product_changes(before, after, self.watch, rate=5.25)
 
         self.assertIn("US$ 10.00 → US$ 12.00 (R$ 63,00)", changes[0]["summary"])
-        self.assertIn("VOLTOU CDE: Produto — US$ 12.00 (R$ 63,00)", changes[1]["summary"])
+        self.assertIn("VOLTOU CDE: [ST-1] Produto — US$ 12.00 (R$ 63,00)", changes[1]["summary"])
 
     def test_quantity_change_is_ignored_in_availability_mode(self):
         before = {1: product(cde=3)}
