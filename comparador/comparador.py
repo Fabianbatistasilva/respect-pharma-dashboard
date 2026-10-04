@@ -5,6 +5,7 @@ import html
 import itertools
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -24,8 +25,10 @@ from monitor import (
     normalize_product,
     normalize_text,
     number,
+    render_template,
     resolve_path,
     send_whatsapp,
+    whatsapp_settings,
     setup_logging,
     utc_now,
 )
@@ -814,7 +817,17 @@ def open_database(path: Path) -> sqlite3.Connection:
         );
         CREATE TABLE IF NOT EXISTS mensagens_avulsas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            texto TEXT NOT NULL
+            texto TEXT NOT NULL,
+            mencoes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS favoritos (
+            participante TEXT NOT NULL,
+            loja TEXT NOT NULL,
+            produto_id TEXT NOT NULL,
+            codigo TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            criado_em TEXT NOT NULL,
+            PRIMARY KEY (participante, loja, produto_id)
         );
         """
     )
@@ -825,6 +838,9 @@ def open_database(path: Path) -> sqlite3.Connection:
         connection.execute("ALTER TABLE historico ADD COLUMN faixas TEXT")
     if "codigo" not in columns:
         connection.execute("ALTER TABLE historico ADD COLUMN codigo TEXT")
+    single_columns = {row[1] for row in connection.execute("PRAGMA table_info(mensagens_avulsas)")}
+    if "mencoes" not in single_columns:
+        connection.execute("ALTER TABLE mensagens_avulsas ADD COLUMN mencoes TEXT")
     return connection
 
 
@@ -1019,13 +1035,53 @@ def deliver_alerts(
     connection.commit()
 
 
+def send_text(config: dict[str, Any], message: str, mentions: list[str] | None = None) -> None:
+    """Envia texto ao grupo; com `mentions`, o WhatsApp marca essas pessoas (o texto precisa trazer "@numero")."""
+    if not mentions:
+        send_whatsapp(config, message)
+        return
+    settings, url, recipient = whatsapp_settings(config)
+    if not settings.get("enabled", False) or not url or not recipient:
+        raise RuntimeError("Integração com WhatsApp desativada ou sem destino configurado.")
+    body = render_template(
+        settings.get("body_template", {"to": "{recipient}", "message": "{message}"}),
+        {"recipient": recipient, "message": message},
+    )
+    body["mentions"] = mentions
+    headers = {"Content-Type": "application/json", **settings.get("headers", {})}
+    token = os.getenv(settings.get("token_env", ""), "")
+    if token:
+        headers[settings.get("auth_header", "Authorization")] = f"{settings.get('auth_scheme', 'Bearer')} {token}".strip()
+    request = urllib.request.Request(
+        url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=integer(settings.get("timeout_seconds"), 15)) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"Servidor do WhatsApp respondeu HTTP {response.status}")
+
+
+def favorite_alerts(connection: sqlite3.Connection, changes: list[str]) -> list[tuple[str, list[str]]]:
+    """Para cada mudança de um produto favoritado, uma mensagem separada marcando quem favoritou."""
+    watchers: dict[str, list[str]] = {}
+    for code, participant in connection.execute("SELECT codigo, participante FROM favoritos ORDER BY criado_em"):
+        watchers.setdefault(code, []).append(participant)
+    alerts = []
+    for change in changes:
+        found = re.search(r"\[([A-Z]{2}-[^\]]+)\]", change)
+        people = watchers.get(found.group(1), []) if found else []
+        if people:
+            names = " ".join("@" + person.split("@")[0].split(":")[0] for person in people)
+            alerts.append((f"⭐ {names} mudou um favorito:\n{change}", people))
+    return alerts
+
+
 def deliver_single_messages(connection: sqlite3.Connection, config: dict[str, Any], logger: logging.Logger) -> None:
-    """Envia, uma por uma, as mensagens que não entram no aviso agrupado (as de PROMO)."""
+    """Envia, uma por uma, as mensagens que não entram no aviso agrupado (PROMO e favoritos)."""
     for row in list(connection.execute("SELECT * FROM mensagens_avulsas ORDER BY id LIMIT 20")):
         logger.info("Mensagem avulsa:\n%s", row["texto"])
         if config.get("whatsapp", {}).get("enabled", False):
             try:
-                send_whatsapp(config, row["texto"])
+                send_text(config, row["texto"], json.loads(row["mencoes"]) if row["mencoes"] else None)
             except Exception:
                 logger.exception("Falha ao enviar mensagem avulsa; será tentado novamente.")
                 return
@@ -1146,12 +1202,14 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     summaries: list[str] = []
     # Promoções valem para as quatro lojas, inclusive o Shape Total (cujos outros avisos vêm do monitor).
     promos: list[str] = []
+    all_changes: list[str] = []
     for store in STORES:
         if not items_by_store[store]:
             continue  # coleta falhou: sem lista, não dá para saber o que mudou ou foi removido
         changes = record_history(
             connection, store, items_by_store[store], rates[store], promos, number(settings["promo_drop_percent"], 20)
         )
+        all_changes.extend(changes)
         if store != SHAPE:
             summaries.extend(changes)
     pruned = prune_history(connection, integer(settings["history_days"], 90))
@@ -1159,6 +1217,10 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     if send_alerts and notify:
         connection.executemany("INSERT INTO alertas_pendentes(resumo) VALUES(?)", [(text,) for text in summaries])
         connection.executemany("INSERT INTO mensagens_avulsas(texto) VALUES(?)", [(text,) for text in promos])
+        connection.executemany(
+            "INSERT INTO mensagens_avulsas(texto, mencoes) VALUES(?, ?)",
+            [(text, json.dumps(people)) for text, people in favorite_alerts(connection, all_changes)],
+        )
     connection.commit()
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))

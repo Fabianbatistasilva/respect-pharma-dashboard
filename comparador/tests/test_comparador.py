@@ -10,6 +10,7 @@ from comparador import (
     ATACADO_BR,
     BYP,
     SHAPE,
+    favorite_alerts,
     features,
     history_series,
     match_products,
@@ -277,6 +278,22 @@ class CodeTests(unittest.TestCase):
 
         self.assertEqual(changed, ["PREÇO (ByPharmacon): [BY-3605] Produto A — US$ 10.00 → US$ 12.00"])
         self.assertEqual(removed, ["REMOVIDO (ByPharmacon): [BY-3605] Produto A"])
+
+
+class FavoriteAlertTests(unittest.TestCase):
+    def test_change_on_a_favorited_code_mentions_everyone_who_saved_it(self):
+        connection = open_database(Path(":memory:"))
+        rows = [("111@lid", BYP, "a", "BY-3605", "Produto A", "2026-10-04T10:00:00+00:00"),
+                ("222@lid", BYP, "a", "BY-3605", "Produto A", "2026-10-04T10:01:00+00:00")]
+        connection.executemany("INSERT INTO favoritos VALUES(?, ?, ?, ?, ?, ?)", rows)
+        changes = ["PREÇO (ByPharmacon): [BY-3605] Produto A — US$ 10.00 → US$ 12.00", "ESGOTOU (ByPharmacon): [BY-9999] Outro"]
+
+        alerts = favorite_alerts(connection, changes)
+
+        self.assertEqual(
+            alerts,
+            [("⭐ @111 @222 mudou um favorito:\nPREÇO (ByPharmacon): [BY-3605] Produto A — US$ 10.00 → US$ 12.00", ["111@lid", "222@lid"])],
+        )
 
 
 class HistoryTests(unittest.TestCase):
