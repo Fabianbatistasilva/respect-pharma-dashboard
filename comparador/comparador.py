@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import html
 import itertools
 import json
@@ -81,7 +82,7 @@ DEFAULTS = {
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
     # Seções do menu da loja a monitorar. Uma seção vazia hoje entra sozinha quando a loja puser produtos nela.
     "atacado_sections": ["promocoes", "tirzep", "reta", "pept", "anabol"],
-    # Reserva, pelo número das categorias (832 = PEPT., 1511 = TIRZEP.), se a lista de seções não puder ser lida.
+    # Usado só se "atacado_sections" estiver vazio: categorias pelo número (832 = PEPT., 1511 = TIRZEP.).
     "atacado_category": "832,1511",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
     "atacado_rate_url": "https://atacadoparaguai.com.py/",
@@ -671,46 +672,20 @@ def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def resolve_atacado_categories(url: str, sections: list[str], fallback: str, timeout: int) -> tuple[str, dict[str, str]]:
-    """Números das categorias das seções pedidas (e das subseções delas) e o nome de cada uma.
-
-    A loja só lista seções que têm produto; as vazias simplesmente não aparecem, e isso é normal.
-    """
-    try:
-        request = urllib.request.Request(
-            f"{url}/categories?per_page=100", headers={"Accept": "application/json", "User-Agent": USER_AGENT}
-        )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            categories = json.load(response)
-        wanted = {str(c["id"]): str(c["name"]).strip() for c in categories if c.get("slug") in sections}
-        added = True
-        while added:  # subseções de uma seção monitorada também entram
-            children = {
-                str(c["id"]): str(c["name"]).strip()
-                for c in categories
-                if str(c.get("parent")) in wanted and str(c["id"]) not in wanted
-            }
-            wanted.update(children)
-            added = bool(children)
-        if wanted:
-            return ",".join(sorted(wanted, key=int)), wanted
-    except Exception:
-        pass
-    return fallback, {}
-
-
 def fetch_atacado(
     url: str, category: str, timeout: int, sections: list[str] | None = None
 ) -> list[dict[str, Any]]:
-    """Baixa as seções inteiras; a "rolagem infinita" do site é esta mesma lista, página a página."""
-    names: dict[str, str] = {}
-    if sections:
-        category, names = resolve_atacado_categories(url, sections, category, timeout)
-    products: list[dict[str, Any]] = []
-    page, total_pages = 1, 1
-    while page <= min(total_pages, 30):
+    """Baixa as seções inteiras; a "rolagem infinita" do site é esta mesma lista, página a página.
+
+    As seções vão pelo nome (a loja ignora as que estiverem vazias) e as páginas são pedidas ao mesmo tempo,
+    porque cada uma leva alguns segundos para a loja responder.
+    """
+    sections = list(sections or [])
+    query = ",".join(sections) if sections else category
+
+    def fetch_page(page: int) -> tuple[list[dict[str, Any]], int]:
         request = urllib.request.Request(
-            f"{url}?category={category}&per_page=100&page={page}",
+            f"{url}?category={query}&per_page=100&page={page}",
             headers={"Accept": "application/json", "User-Agent": USER_AGENT},
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -718,13 +693,21 @@ def fetch_atacado(
             payload = json.load(response)
         if not isinstance(payload, list):
             raise ValueError("Resposta do Atacado Paraguai não é uma lista de produtos.")
+        return payload, total_pages
+
+    products: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # As duas primeiras páginas saem juntas; página além do fim volta vazia, sem erro.
+        first = list(pool.map(fetch_page, (1, 2)))
+        total_pages = min(first[0][1], 30)
+        rest = list(pool.map(fetch_page, range(3, total_pages + 1)))
+    for payload, _ in first + rest:
         products.extend(payload)
-        page += 1
 
     items = {item["id"]: item for item in map(normalize_atacado, products) if item["id"] and item["nome"]}
     for raw in products:
         # A seção do menu em que o produto está vira a categoria dele no painel ("TIRZEP.", "PEPT.", "Promoções").
-        own = [names[str(c.get("id"))] for c in raw.get("categories") or [] if str(c.get("id")) in names]
+        own = [str(c.get("name") or "").strip() for c in raw.get("categories") or [] if c.get("slug") in sections]
         if own and str(raw.get("id")) in items:
             items[str(raw.get("id"))]["categoria"] = " / ".join(sorted(set(own)))
     if any(item.pop("moeda") != "USD" for item in items.values()):
@@ -1186,23 +1169,19 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     errors: list[str] = []
 
     timeout = integer(config.get("request_timeout_seconds"), 30)
-    if settings["fetch_shape_directly"]:
-        try:
-            shape_items, shape_rate = fetch_shape_items(config["api_url"], timeout)
-        except Exception as exc:
-            shape_items, shape_rate = [], 0.0
-            errors.append(f"Shape Total: {type(exc).__name__}: {exc}")
-    else:
-        shape_items, shape_rate = load_shape_items(resolve_path(config_path, config["database_path"]))
-        if not shape_items:
-            errors.append("Shape Total: o monitor ainda não salvou o catálogo.")
-
-    items_by_store: dict[str, list[dict[str, Any]]] = {store: [] for store in STORES}
-    items_by_store[SHAPE] = shape_items
-    own_rates = {store: 0.0 for store in STORES}
-    own_rates[SHAPE] = shape_rate
     fixed_rate = number(settings["cotacao_fixa"])
-    sources = {
+
+    def shape_source() -> tuple[list[dict[str, Any]], float]:
+        if settings["fetch_shape_directly"]:
+            return fetch_shape_items(config["api_url"], timeout)
+        items, rate = load_shape_items(resolve_path(config_path, config["database_path"]))
+        if not items:
+            raise RuntimeError("o monitor ainda não salvou o catálogo.")
+        return items, rate
+
+    # Cada loja devolve (itens, função que busca a cotação); a cotação do Shape Total já vem junto do catálogo.
+    sources: dict[str, tuple[Any, Any]] = {
+        SHAPE: (shape_source, None),
         BYP: (
             lambda: fetch_bypharmacon(settings["bypharmacon_api_url"], timeout),
             lambda: fetch_bypharmacon_rate(
@@ -1220,17 +1199,32 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
             lambda: fetch_atacadobrasil_rate(settings["atacadobrasil_rate_url"], timeout),
         ),
     }
-    for store, (fetch_items, fetch_rate) in sources.items():
+
+    def collect(store: str) -> tuple[list[dict[str, Any]], float, list[str]]:
+        """Catálogo e cotação de uma loja. Um erro aqui não atrapalha as outras."""
+        fetch_items, fetch_rate = sources[store]
         try:
-            items_by_store[store] = fetch_items()
+            result = fetch_items()
         except Exception as exc:
-            errors.append(f"{STORE_LABELS[store]}: {type(exc).__name__}: {exc}")
-            continue
-        if fixed_rate <= 0:
-            try:
-                own_rates[store] = fetch_rate()
-            except Exception as exc:
-                errors.append(f"Cotação do {STORE_LABELS[store]} indisponível ({type(exc).__name__}); usando a de outra loja.")
+            detail = str(exc) if isinstance(exc, RuntimeError) else f"{type(exc).__name__}: {exc}"
+            return [], 0.0, [f"{STORE_LABELS[store]}: {detail}"]
+        if fetch_rate is None:
+            return result[0], result[1], []
+        if fixed_rate > 0:
+            return result, 0.0, []
+        try:
+            return result, fetch_rate(), []
+        except Exception as exc:
+            return result, 0.0, [f"Cotação do {STORE_LABELS[store]} indisponível ({type(exc).__name__}); usando a de outra loja."]
+
+    # As lojas são consultadas ao mesmo tempo: a rodada dura o tempo da mais lenta, não a soma de todas.
+    items_by_store: dict[str, list[dict[str, Any]]] = {}
+    own_rates: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=len(STORES)) as pool:
+        results = dict(zip(STORES, pool.map(collect, STORES)))
+    for store in STORES:
+        items_by_store[store], own_rates[store], problems = results[store]
+        errors.extend(problems)
 
     if fixed_rate > 0:
         rates = {store: fixed_rate for store in STORES}
