@@ -78,9 +78,10 @@ DEFAULTS = {
     # Endereço aberto pelo botão "Coletar agora" do painel (na versão publicada, a página do workflow).
     "refresh_url": None,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
-    "atacado_category": "farma",
+    # Categorias pelo número (832 = peptídeos/farma, 1511 = tirzepatidas): o número não muda quando a loja renomeia.
+    "atacado_category": "832,1511",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
-    "atacado_rate_url": "https://atacadoparaguai.com.py/categoria-produto/farma/",
+    "atacado_rate_url": "https://atacadoparaguai.com.py/",
     "atacadobrasil_api_url": "https://api.atacadobrasilpy.com/products",
     "atacadobrasil_group": "medicamentos",
     "atacadobrasil_rate_url": "https://api.atacadobrasilpy.com/exchange/rates",
@@ -662,7 +663,7 @@ def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
         "estoque": None,
         "estoque_detalhe": "",
         "disponivel": in_stock,
-        "url": str(product.get("permalink") or "https://atacadoparaguai.com.py/categoria-produto/farma/"),
+        "url": str(product.get("permalink") or "https://atacadoparaguai.com.py/"),
         "moeda": str(prices.get("currency_code") or ""),
     }
 
