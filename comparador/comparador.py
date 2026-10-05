@@ -55,6 +55,7 @@ PANEL_NOTES = [
     "Atacado Brasil cobra por quantidade: o preço comparado é o de 1 a 2 unidades (Varejo). "
     "As faixas de 3+, 5+ e 10+ unidades aparecem logo abaixo do preço; a vitrine do site mostra a de 10+.",
     "No Atacado Brasil, produto sem estoque some da lista da loja; por isso ele aparece aqui como esgotado, não como removido.",
+    "Do Atacado Paraguai entram as seções Promoções, Tirzep, Reta, Pept. e Anabol do menu; seção vazia na loja não traz produto.",
 ]
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ComparadorLocal/1.0 (+personal-use)"
 
@@ -78,7 +79,9 @@ DEFAULTS = {
     # Endereço aberto pelo botão "Coletar agora" do painel (na versão publicada, a página do workflow).
     "refresh_url": None,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
-    # Categorias pelo número (832 = peptídeos/farma, 1511 = tirzepatidas): o número não muda quando a loja renomeia.
+    # Seções do menu da loja a monitorar. Uma seção vazia hoje entra sozinha quando a loja puser produtos nela.
+    "atacado_sections": ["promocoes", "tirzep", "reta", "pept", "anabol"],
+    # Reserva, pelo número das categorias (832 = PEPT., 1511 = TIRZEP.), se a lista de seções não puder ser lida.
     "atacado_category": "832,1511",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
     "atacado_rate_url": "https://atacadoparaguai.com.py/",
@@ -668,8 +671,41 @@ def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_atacado(url: str, category: str, timeout: int) -> list[dict[str, Any]]:
-    """Baixa a categoria inteira; a "rolagem infinita" do site é esta mesma lista, página a página."""
+def resolve_atacado_categories(url: str, sections: list[str], fallback: str, timeout: int) -> tuple[str, dict[str, str]]:
+    """Números das categorias das seções pedidas (e das subseções delas) e o nome de cada uma.
+
+    A loja só lista seções que têm produto; as vazias simplesmente não aparecem, e isso é normal.
+    """
+    try:
+        request = urllib.request.Request(
+            f"{url}/categories?per_page=100", headers={"Accept": "application/json", "User-Agent": USER_AGENT}
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            categories = json.load(response)
+        wanted = {str(c["id"]): str(c["name"]).strip() for c in categories if c.get("slug") in sections}
+        added = True
+        while added:  # subseções de uma seção monitorada também entram
+            children = {
+                str(c["id"]): str(c["name"]).strip()
+                for c in categories
+                if str(c.get("parent")) in wanted and str(c["id"]) not in wanted
+            }
+            wanted.update(children)
+            added = bool(children)
+        if wanted:
+            return ",".join(sorted(wanted, key=int)), wanted
+    except Exception:
+        pass
+    return fallback, {}
+
+
+def fetch_atacado(
+    url: str, category: str, timeout: int, sections: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Baixa as seções inteiras; a "rolagem infinita" do site é esta mesma lista, página a página."""
+    names: dict[str, str] = {}
+    if sections:
+        category, names = resolve_atacado_categories(url, sections, category, timeout)
     products: list[dict[str, Any]] = []
     page, total_pages = 1, 1
     while page <= min(total_pages, 30):
@@ -686,6 +722,11 @@ def fetch_atacado(url: str, category: str, timeout: int) -> list[dict[str, Any]]
         page += 1
 
     items = {item["id"]: item for item in map(normalize_atacado, products) if item["id"] and item["nome"]}
+    for raw in products:
+        # A seção do menu em que o produto está vira a categoria dele no painel ("TIRZEP.", "PEPT.", "Promoções").
+        own = [names[str(c.get("id"))] for c in raw.get("categories") or [] if str(c.get("id")) in names]
+        if own and str(raw.get("id")) in items:
+            items[str(raw.get("id"))]["categoria"] = " / ".join(sorted(set(own)))
     if any(item.pop("moeda") != "USD" for item in items.values()):
         raise ValueError("Atacado Paraguai deixou de informar os preços em dólar.")
     if len(items) < 20:
@@ -1169,7 +1210,9 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
             ),
         ),
         ATACADO: (
-            lambda: fetch_atacado(settings["atacado_api_url"], settings["atacado_category"], timeout),
+            lambda: fetch_atacado(
+                settings["atacado_api_url"], settings["atacado_category"], timeout, settings["atacado_sections"]
+            ),
             lambda: fetch_atacado_rate(settings["atacado_rate_url"], timeout),
         ),
         ATACADO_BR: (
