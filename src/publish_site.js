@@ -15,6 +15,8 @@ const REQUIRED_FILES = [
 // Painel gerado por comparador/comparador.py (comparacao de precos entre as lojas).
 const COMPARADOR_SOURCE = 'comparador/data/painel.html';
 const COMPARADOR_PAGE = 'comparador.html';
+const BOT_DATA_SOURCE = 'comparador/data/bot.json';
+const BOT_DATA_FILE = 'bot.json';
 
 const OPTIONAL_FILES = [
   'screenshots/promo_page.png',
@@ -55,6 +57,18 @@ async function copyComparador() {
   }
 
   return `public/${COMPARADOR_PAGE}`;
+}
+
+// Dados do chat de busca (site separado), gerados por comparador/exportar_bot.py.
+async function copyBotData() {
+  try {
+    await fs.copyFile(path.join(ROOT_DIR, BOT_DATA_SOURCE), path.join(PUBLIC_DIR, BOT_DATA_FILE));
+  } catch {
+    console.warn(`Dados do chat de busca ausentes, publicacao continua: ${BOT_DATA_SOURCE}`);
+    return null;
+  }
+
+  return `public/${BOT_DATA_FILE}`;
 }
 
 async function writeIndex(hasComparador) {
@@ -125,6 +139,8 @@ async function main() {
 
   const comparadorFile = await copyComparador();
   if (comparadorFile) copiedFiles.push(comparadorFile);
+  const botDataFile = await copyBotData();
+  if (botDataFile) copiedFiles.push(botDataFile);
 
   await writeIndex(Boolean(comparadorFile));
 

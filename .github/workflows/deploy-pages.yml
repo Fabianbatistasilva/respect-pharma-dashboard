@@ -111,6 +111,11 @@ jobs:
         working-directory: comparador
         run: python comparador.py --config config.json --sem-alertas || echo "::warning::Comparador terminou com coleta incompleta"
 
+      # Dados do chat de busca (site separado): publicados como bot.json.
+      - name: Export chat data
+        working-directory: comparador
+        run: python exportar_bot.py || echo "::warning::Dados do chat de busca nao foram gerados"
+
       # Um unico commit, sempre substituido: o branch guarda so a versao atual do banco.
       - name: Save price history
         if: steps.history.outcome == 'success'
