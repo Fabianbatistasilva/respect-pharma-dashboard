@@ -313,9 +313,10 @@ def features(item: dict[str, Any]) -> dict[str, Any]:
             count = int(found.group(1))
 
     volume = None
-    found = re.search(r"(\d+)\s*(?:amp\w*\.?)?\s*x\s*(\d+(?:\.\d+)?)\s*ml\b", text)
-    if found:
-        volume = int(found.group(1)) * to_float(found.group(2))
+    found = re.search(r"(\d+)\s*(amp\w*\.?)?\s*x\s*(\d+(?:\.\d+)?)\s*ml\b", text)
+    # "10 amp x 1 ml" e "10x1ml" são 10 ampolas; em "300 x 10ml" o 300 é a dose, e o frasco tem 10 ml.
+    if found and (found.group(2) or int(found.group(1)) <= 30):
+        volume = int(found.group(1)) * to_float(found.group(3))
     else:
         found = re.search(r"(?<![/\d.])(\d+(?:\.\d+)?)\s*ml\b", text)
         if found:
