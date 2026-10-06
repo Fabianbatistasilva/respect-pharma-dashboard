@@ -15,8 +15,9 @@ const REQUIRED_FILES = [
 // Painel gerado por comparador/comparador.py (comparacao de precos entre as lojas).
 const COMPARADOR_SOURCE = 'comparador/data/painel.html';
 const COMPARADOR_PAGE = 'comparador.html';
-const BOT_DATA_SOURCE = 'comparador/data/bot.json';
-const BOT_DATA_FILE = 'bot.json';
+// Arquivos de dados gerados em comparador/data e publicados na raiz do site:
+// bot.json (exportar_bot.py), venda.json e tabela-precos.pdf (exportar_venda.py, para o site do cliente).
+const DATA_FILES = ['bot.json', 'venda.json', 'tabela-precos.pdf'];
 
 const OPTIONAL_FILES = [
   'screenshots/promo_page.png',
@@ -59,16 +60,16 @@ async function copyComparador() {
   return `public/${COMPARADOR_PAGE}`;
 }
 
-// Dados do chat de busca (site separado), gerados por comparador/exportar_bot.py.
-async function copyBotData() {
+async function copyDataFile(name) {
+  const source = `comparador/data/${name}`;
   try {
-    await fs.copyFile(path.join(ROOT_DIR, BOT_DATA_SOURCE), path.join(PUBLIC_DIR, BOT_DATA_FILE));
+    await fs.copyFile(path.join(ROOT_DIR, source), path.join(PUBLIC_DIR, name));
   } catch {
-    console.warn(`Dados do chat de busca ausentes, publicacao continua: ${BOT_DATA_SOURCE}`);
+    console.warn(`Arquivo de dados ausente, publicacao continua: ${source}`);
     return null;
   }
 
-  return `public/${BOT_DATA_FILE}`;
+  return `public/${name}`;
 }
 
 async function writeIndex(hasComparador) {
@@ -139,8 +140,10 @@ async function main() {
 
   const comparadorFile = await copyComparador();
   if (comparadorFile) copiedFiles.push(comparadorFile);
-  const botDataFile = await copyBotData();
-  if (botDataFile) copiedFiles.push(botDataFile);
+  for (const name of DATA_FILES) {
+    const dataFile = await copyDataFile(name);
+    if (dataFile) copiedFiles.push(dataFile);
+  }
 
   await writeIndex(Boolean(comparadorFile));
 
