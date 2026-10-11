@@ -398,5 +398,78 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(remaining, [("a", 11.0), ("b", 21.0)])
 
 
+
+class AtacadoRateTests(unittest.TestCase):
+    HEADER = b'<span class="atacado-cotacao-dolar"> <strong>USD/BRL</strong> <span class="x">=</span> <strong>5.09</strong> </span>'
+
+    def responses(self, *bodies):
+        """Cada resposta é o corpo inteiro (bytes), um corpo cortado (IncompleteRead) ou um erro de rede."""
+        import http.client
+        from unittest import mock
+
+        import comparador
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                if isinstance(self.body, Exception):
+                    raise self.body
+                return self.body
+
+        queue = list(bodies)
+        calls = []
+
+        def urlopen(request, timeout=None):
+            calls.append(request)
+            body = queue.pop(0)
+            if isinstance(body, OSError):
+                raise body
+            return Response(body)
+
+        self.cut = lambda partial: http.client.IncompleteRead(partial, 1000)
+        return mock.patch.object(comparador.urllib.request, "urlopen", urlopen), calls
+
+    def test_reads_the_rate_from_a_page_cut_in_the_middle(self):
+        import http.client
+
+        from comparador import fetch_atacado_rate
+
+        patch, calls = self.responses(http.client.IncompleteRead(self.HEADER + b"<div>resto", 1000))
+        with patch:
+            self.assertEqual(fetch_atacado_rate("https://loja/", 5), 5.09)
+        self.assertEqual(len(calls), 1)
+
+    def test_tries_again_when_the_connection_fails_or_the_rate_did_not_arrive(self):
+        import http.client
+
+        from comparador import fetch_atacado_rate
+
+        patch, calls = self.responses(ConnectionResetError("caiu"), http.client.IncompleteRead(b"<html><head>", 1000), self.HEADER)
+        with patch:
+            self.assertEqual(fetch_atacado_rate("https://loja/", 5), 5.09)
+        self.assertEqual(len(calls), 3)
+
+    def test_gives_up_after_the_attempts_with_the_last_reason(self):
+        import http.client
+
+        from comparador import fetch_atacado_rate
+
+        patch, calls = self.responses(b"<html>sem cotacao</html>", b"<html>sem cotacao</html>")
+        with patch, self.assertRaises(ValueError):
+            fetch_atacado_rate("https://loja/", 5, attempts=2)
+        patch, calls = self.responses(*[http.client.IncompleteRead(b"<html>", 1000)] * 3)
+        with patch, self.assertRaises(http.client.IncompleteRead):
+            fetch_atacado_rate("https://loja/", 5)
+        self.assertEqual(len(calls), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import html
+import http.client
 import itertools
 import json
 import logging
@@ -718,15 +719,30 @@ def fetch_atacado(
     return list(items.values())
 
 
-def fetch_atacado_rate(url: str, timeout: int) -> float:
+def fetch_atacado_rate(url: str, timeout: int, attempts: int = 3) -> float:
+    """Lê a cotação do cabeçalho da página inicial da loja.
+
+    A página é grande (300 KB) e a conexão às vezes cai no meio. A cotação fica no começo, então o pedaço
+    que chegou costuma bastar; se não bastar, tenta de novo.
+    """
     request = urllib.request.Request(url, headers={"Accept": "text/html", "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        page = response.read().decode("utf-8", errors="replace")
-    found = re.search(r"atacado-cotacao-dolar.*?=\s*</span>\s*<strong>\s*(\d+[.,]\d+)", page, re.S)
-    rate = to_float(found.group(1)) if found else 0.0
-    if not 1 < rate < 20:
-        raise ValueError("Cotação do dia não encontrada na página do Atacado Paraguai.")
-    return rate
+    failure: Exception = ValueError("Cotação do dia não encontrada na página do Atacado Paraguai.")
+    for _ in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                try:
+                    body = response.read()
+                except http.client.IncompleteRead as exc:
+                    failure, body = exc, exc.partial
+        except OSError as exc:
+            failure = exc
+            continue
+        page = body.decode("utf-8", errors="replace")
+        found = re.search(r"atacado-cotacao-dolar.*?=\s*</span>\s*<strong>\s*(\d+[.,]\d+)", page, re.S)
+        rate = to_float(found.group(1)) if found else 0.0
+        if 1 < rate < 20:
+            return rate
+    raise failure
 
 
 def normalize_atacadobrasil(product: dict[str, Any]) -> dict[str, Any]:
