@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -371,6 +372,79 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(record_history(connection, BYP, only_a), ["REMOVIDO (ByPharmacon): Produto B"])
         self.assertEqual(record_history(connection, BYP, only_a), [])
         self.assertEqual(record_history(connection, BYP, both), ["VOLTOU AO CATÁLOGO (ByPharmacon): Produto B — US$ 10.00"])
+
+    def test_store_that_hides_sold_out_products_reports_out_of_stock(self):
+        connection = open_database(Path(":memory:"))
+        both = [item(ATACADO, "a", "Produto A", "Marca"), item(ATACADO, "b", "Produto B", "Marca")]
+        record_history(connection, ATACADO, both)
+
+        # O Atacado Paraguai só lista o que tem estoque: sumir da lista é esgotar, não sair do catálogo.
+        self.assertEqual(record_history(connection, ATACADO, both[:1]), ["ESGOTOU (Atacado Paraguai): Produto B"])
+        self.assertEqual(record_history(connection, ATACADO, both[:1]), [])
+        self.assertEqual(record_history(connection, ATACADO, both), ["VOLTOU (Atacado Paraguai): Produto B — US$ 10.00"])
+
+    def test_product_marked_removed_before_the_change_returns_as_back_in_stock(self):
+        connection = open_database(Path(":memory:"))
+        both = [item(ATACADO, "a", "Produto A", "Marca"), item(ATACADO, "b", "Produto B", "Marca")]
+        record_history(connection, ATACADO, both[:1])
+        connection.execute(
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, removido) VALUES(?, 'b', 'Produto B', 10, 0, ?, 1)",
+            (ATACADO, "2026-10-09T00:00:00+00:00"),
+        )
+
+        self.assertEqual(record_history(connection, ATACADO, both), ["VOLTOU (Atacado Paraguai): Produto B — US$ 10.00"])
+
+    def test_atacado_keeps_products_without_a_section_except_tobacco_items(self):
+        from unittest import mock
+
+        import comparador
+
+        def product(number, name, categories):
+            return {
+                "id": number, "name": name, "is_in_stock": True, "permalink": "https://loja/p",
+                "prices": {"price": "3500", "regular_price": "3500", "currency_minor_unit": 2, "currency_code": "USD"},
+                "categories": categories, "brands": [],
+            }
+
+        catalog = [product(number, f"PRODUTO {number} 10MG", [{"slug": "anabol", "name": "ANABOL."}]) for number in range(1, 21)]
+        catalog += [
+            product(100, "TESTOBOLIN (TESTOSTERONA ENANTHATHE) 250MG &#8211; 10 VIAL", []),
+            product(101, "POD IGNITE V-MIX 40K", []),
+            product(102, "POD NIKBAR 10K", []),
+        ]
+
+        class Response:
+            headers = {"X-WP-TotalPages": "1"}
+
+            def __init__(self, url):
+                self.page = int(url.rsplit("page=", 1)[1])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, *args):
+                return json.dumps(catalog if self.page == 1 else []).encode()
+
+        urls = []
+
+        def urlopen(request, timeout=None):
+            urls.append(request.full_url)
+            return Response(request.full_url)
+
+        with mock.patch.object(comparador.urllib.request, "urlopen", urlopen):
+            found = comparador.fetch_atacado("https://loja/api", "832", 5, ["anabol", "uncategorized"], ["pod", "vape"])
+
+        self.assertIn("category=anabol,uncategorized", urls[0])
+        by_id = {entry["id"]: entry for entry in found}
+        self.assertEqual(len(found), 21)
+        self.assertEqual(by_id["100"]["categoria"], "Sem seção")
+        self.assertEqual(by_id["100"]["nome"], "TESTOBOLIN (TESTOSTERONA ENANTHATHE) 250MG - 10 VIAL")
+        self.assertEqual(by_id["1"]["categoria"], "ANABOL.")
+        self.assertNotIn("101", by_id)
+        self.assertNotIn("102", by_id)
 
     def test_mass_disappearance_is_not_treated_as_removal(self):
         connection = open_database(Path(":memory:"))

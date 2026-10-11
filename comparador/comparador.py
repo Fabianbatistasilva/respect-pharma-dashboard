@@ -50,7 +50,7 @@ STORE_LABELS = {
 # Código de cada produto: prefixo da loja + o número que a própria loja usa (ST-1396, BY-3605, AP-45220, AB-3239).
 CODE_PREFIX = {SHAPE: "ST", BYP: "BY", ATACADO: "AP", ATACADO_BR: "AB"}
 # Lojas cuja lista só traz o que tem estoque: produto que some esgotou, não foi removido.
-STORES_HIDING_OUT_OF_STOCK = {ATACADO_BR}
+STORES_HIDING_OUT_OF_STOCK = {ATACADO, ATACADO_BR}
 # Faixas de quantidade do Atacado Brasil: (campo da API, quantidade mínima).
 ATACADO_BR_TIERS = (("priceVarejoPlus", 3), ("priceAtacado", 5), ("priceAtacadoPlus", 10))
 PANEL_NOTES = [
@@ -82,7 +82,10 @@ DEFAULTS = {
     "refresh_url": None,
     "atacado_api_url": "https://atacadoparaguai.com.py/wp-json/wc/store/v1/products",
     # Seções do menu da loja a monitorar. Uma seção vazia hoje entra sozinha quando a loja puser produtos nela.
-    "atacado_sections": ["promocoes", "tirzep", "reta", "pept", "anabol"],
+    # "uncategorized" são os produtos que a loja cadastrou sem seção: não aparecem no menu, mas estão à venda.
+    "atacado_sections": ["promocoes", "tirzep", "reta", "pept", "anabol", "uncategorized"],
+    # Entre os sem seção há itens de tabacaria; os que têm uma destas palavras no nome ficam de fora.
+    "atacado_skip_words": ["pod", "vape", "juice", "nic", "ignite"],
     # Usado só se "atacado_sections" estiver vazio: categorias pelo número (832 = PEPT., 1511 = TIRZEP.).
     "atacado_category": "832,1511",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
@@ -675,7 +678,7 @@ def normalize_atacado(product: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_atacado(
-    url: str, category: str, timeout: int, sections: list[str] | None = None
+    url: str, category: str, timeout: int, sections: list[str] | None = None, skip_words: list[str] | None = None
 ) -> list[dict[str, Any]]:
     """Baixa as seções inteiras; a "rolagem infinita" do site é esta mesma lista, página a página.
 
@@ -707,11 +710,21 @@ def fetch_atacado(
         products.extend(payload)
 
     items = {item["id"]: item for item in map(normalize_atacado, products) if item["id"] and item["nome"]}
+    skipped = set(skip_words or [])
     for raw in products:
+        key = str(raw.get("id"))
+        if key not in items:
+            continue
         # A seção do menu em que o produto está vira a categoria dele no painel ("TIRZEP.", "PEPT.", "Promoções").
         own = [str(c.get("name") or "").strip() for c in raw.get("categories") or [] if c.get("slug") in sections]
-        if own and str(raw.get("id")) in items:
-            items[str(raw.get("id"))]["categoria"] = " / ".join(sorted(set(own)))
+        if own:
+            items[key]["categoria"] = " / ".join(sorted(set(own)))
+        elif not raw.get("categories"):
+            # Sem seção: a loja não diz o que é, então o nome decide se interessa.
+            if skipped & set(re.findall(r"[a-z0-9]+", normalize_text(items[key]["nome"]))):
+                del items[key]
+            else:
+                items[key]["categoria"] = "Sem seção"
     if any(item.pop("moeda") != "USD" for item in items.values()):
         raise ValueError("Atacado Paraguai deixou de informar os preços em dólar.")
     if len(items) < 20:
@@ -966,7 +979,9 @@ def record_history(
         if not previous:
             continue
         if before is None or was_removed:
-            kind = "VOLTOU AO CATÁLOGO" if was_removed else "NOVO"
+            # Onde a loja esconde o que acaba, voltar à lista é voltar ao estoque.
+            returned = "VOLTOU" if store in STORES_HIDING_OUT_OF_STOCK else "VOLTOU AO CATÁLOGO"
+            kind = returned if was_removed else "NOVO"
             summaries.append(f"{kind} ({label}): {named(item)} — {alert_value(item, rate)}")
             continue
         if before["preco"] != item["preco"]:
@@ -1207,7 +1222,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
         ),
         ATACADO: (
             lambda: fetch_atacado(
-                settings["atacado_api_url"], settings["atacado_category"], timeout, settings["atacado_sections"]
+                settings["atacado_api_url"], settings["atacado_category"], timeout, settings["atacado_sections"],
+                settings["atacado_skip_words"],
             ),
             lambda: fetch_atacado_rate(settings["atacado_rate_url"], timeout),
         ),
