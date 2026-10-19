@@ -34,23 +34,27 @@ from monitor import (
     setup_logging,
     utc_now,
 )
+from catalogos_pdf import LIFE, PDF_STORES, load_items as load_pdf_catalog
 
 
 SHAPE = "shapetotal"
 BYP = "bypharmacon"
 ATACADO = "atacadoparaguai"
 ATACADO_BR = "atacadobrasil"
-STORES = (SHAPE, BYP, ATACADO, ATACADO_BR)
+# Life Suplementos não tem site: entra pelo catálogo em PDF que alguém manda no grupo (catalogos_pdf.py).
+STORES = (SHAPE, BYP, ATACADO, ATACADO_BR, LIFE)
 STORE_LABELS = {
     SHAPE: "Shape Total",
     BYP: "ByPharmacon",
     ATACADO: "Atacado Paraguai",
     ATACADO_BR: "Atacado Brasil",
+    **{store: info["label"] for store, info in PDF_STORES.items()},
 }
 # Código de cada produto: prefixo da loja + o número que a própria loja usa (ST-1396, BY-3605, AP-45220, AB-3239).
-CODE_PREFIX = {SHAPE: "ST", BYP: "BY", ATACADO: "AP", ATACADO_BR: "AB"}
+# Nas lojas de PDF o número é dado por nós e fica fixo para o mesmo produto (LF-12).
+CODE_PREFIX = {SHAPE: "ST", BYP: "BY", ATACADO: "AP", ATACADO_BR: "AB", **{store: info["prefixo"] for store, info in PDF_STORES.items()}}
 # Lojas cuja lista só traz o que tem estoque: produto que some esgotou, não foi removido.
-STORES_HIDING_OUT_OF_STOCK = {ATACADO, ATACADO_BR}
+STORES_HIDING_OUT_OF_STOCK = {ATACADO, ATACADO_BR, *PDF_STORES}
 # Faixas de quantidade do Atacado Brasil: (campo da API, quantidade mínima).
 ATACADO_BR_TIERS = (("priceVarejoPlus", 3), ("priceAtacado", 5), ("priceAtacadoPlus", 10))
 PANEL_NOTES = [
@@ -73,6 +77,8 @@ DEFAULTS = {
     "database_path": "data/comparador.sqlite3",
     "panel_path": "data/painel.html",
     "matches_path": "correspondencias.json",
+    # Catálogos em PDF importados pelo bot (só existem no PC: na coleta do GitHub a pasta não existe e a loja fica de fora).
+    "catalogs_path": "data/catalogos",
     "min_score": 0.62,
     # Dias de histórico de preços guardados no banco; o que for mais antigo é apagado.
     "history_days": 90,
@@ -276,7 +282,10 @@ def clean_number(value: float) -> str:
 
 
 # Grafias diferentes da mesma marca.
-BRAND_ALIASES = {"biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan", "musclepharm": "muscle", "veltran": "veltrane"}
+BRAND_ALIASES = {
+    "biogenises": "biogenesis", "biogeneses": "biogenesis", "lander": "landerlan", "musclepharm": "muscle", "veltran": "veltrane",
+    "geniqspharma": "geniqs",
+}
 
 
 def brand_key(brand: str) -> str:
@@ -1164,10 +1173,14 @@ def build_panel_data(
     rates: dict[str, float],
     history: dict[str, dict[str, list[list[Any]]]],
     refresh_url: str | None = None,
+    catalogs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "gerado_em": iso_now(),
-        "ordem_lojas": list(STORES),
+        # Loja de PDF sem catálogo (como na coleta do GitHub) não vira coluna vazia no painel.
+        "ordem_lojas": [store for store in STORES if store not in PDF_STORES or items_by_store.get(store)],
+        # Data de cada catálogo em PDF: os preços valem desde ela, não desde a coleta.
+        "catalogos_pdf": catalogs or {},
         "lojas": STORE_LABELS,
         "cotacoes": rates,
         "erros": errors,
@@ -1232,6 +1245,21 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
             lambda: fetch_atacadobrasil_rate(settings["atacadobrasil_rate_url"], timeout),
         ),
     }
+    # Lojas de PDF: o último catálogo guardado. Sem cotação própria, usam a de outra loja (sem aviso: é o esperado).
+    catalogs_folder = resolve_path(config_path, settings["catalogs_path"])
+    catalogs: dict[str, str] = {}
+
+    def pdf_source(store: str):
+        def read() -> tuple[list[dict[str, Any]], float]:
+            items, generated = load_pdf_catalog(catalogs_folder, store)
+            if generated:
+                catalogs[store] = generated
+            return items, 0.0
+
+        return read
+
+    for store in PDF_STORES:
+        sources[store] = (pdf_source(store), None)
 
     def collect(store: str) -> tuple[list[dict[str, Any]], float, list[str]]:
         """Catálogo e cotação de uma loja. Um erro aqui não atrapalha as outras."""
@@ -1281,7 +1309,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
             connection, store, items_by_store[store], rates[store], promos, number(settings["promo_drop_percent"], 20)
         )
         all_changes.extend(changes)
-        if store != SHAPE:
+        # Shape Total já avisa pelo monitor; nas lojas de PDF o bot manda o resumo ao importar o catálogo.
+        if store != SHAPE and store not in PDF_STORES:
             summaries.extend(changes)
     pruned = prune_history(connection, integer(settings["history_days"], 90))
     notify = settings.get("notify_bypharmacon_changes", settings["notify_changes"])
@@ -1296,7 +1325,9 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
 
     confirmed, rejected = load_matches(resolve_path(config_path, settings["matches_path"]))
     matches = match_products(items_by_store, confirmed, rejected, number(settings["min_score"], 0.62))
-    data = build_panel_data(items_by_store, matches, price_changes(connection), errors, rates, history_series(connection), settings["refresh_url"])
+    data = build_panel_data(
+        items_by_store, matches, price_changes(connection), errors, rates, history_series(connection), settings["refresh_url"], catalogs
+    )
     panel_path = resolve_path(config_path, settings["panel_path"])
     panel_path.parent.mkdir(parents=True, exist_ok=True)
     panel_path.write_text(render_panel(data), encoding="utf-8")

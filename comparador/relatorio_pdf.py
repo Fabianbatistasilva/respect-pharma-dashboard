@@ -95,6 +95,7 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
     rates = data.get("cotacoes") or {}
     collected = datetime.fromisoformat(data["gerado_em"]).astimezone()
     products = data["produtos"]
+    stores = data.get("ordem_lojas") or list(STORES)
     counts = Counter(item["loja"] for item in products)
     groups = [group for group in data.get("grupos", []) if group["confianca"] != "baixa"]
 
@@ -121,8 +122,9 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
             "bypharmacon": "Preço de 1 unidade; faixas de 5+ e 20+ unidades com desconto.",
             "atacadoparaguai": "Só a categoria Farma. Informa apenas se tem ou não estoque.",
             "atacadobrasil": "Grupo Medicamentos. Preço de 1 a 2 unidades; faixas de 3+, 5+ e 10+ unidades. Só lista o que tem estoque.",
+            "life": "Catálogo em PDF enviado pela loja: preços da data do catálogo, sem estoque informado.",
         }
-        for store in STORES:
+        for store in stores:
             available = sum(1 for item in products if item["loja"] == store and item["disponivel"])
             rate = rates.get(store, 0)
             table.row((STORE_LABELS[store], str(counts[store]), str(available), brl(rate) if rate else "—", notes.get(store, "")))
@@ -133,7 +135,8 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
         "Faixas de atacado aparecem na coluna Faixas. A seção 1 junta o mesmo produto vendido em lojas diferentes "
         "(cruzamento automático por marca, princípio ativo, dose e embalagem; confira antes de decidir). "
         "A seção 2 lista todos os produtos, de todas as lojas, um por linha, ordenados por marca e nome. "
-        "Cada produto tem um código único: ST- (Shape Total), BY- (ByPharmacon), AP- (Atacado Paraguai), AB- (Atacado Brasil)."
+        "Cada produto tem um código único: ST- (Shape Total), BY- (ByPharmacon), AP- (Atacado Paraguai), AB- (Atacado Brasil)"
+        + (", LF- (Life Suplementos, catálogo em PDF)." if "life" in stores else ".")
     ), new_x="LMARGIN", new_y="NEXT")
 
     # Seção 1: comparação entre lojas.
@@ -147,7 +150,7 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
         cheapest = min(available, key=reais) if available else None
         reference = cheapest or items[0]
         prices = {}
-        for store in STORES:
+        for store in stores:
             item = group["itens"].get(store)
             prices[store] = "—" if not item else (brl(reais(item)) + ("" if item["disponivel"] else " (sem)"))
         values = sorted(reais(item) for item in available)
@@ -157,12 +160,14 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
                      STORE_LABELS[cheapest["loja"]] if cheapest else "sem estoque", gap, group["confianca"]))
     rows.sort(key=lambda row: (row[0].lower(), row[1].lower()))
     pdf.set_font(FONT, "", 6.8)
-    with pdf.table(col_widths=(24, 64, 25, 25, 25, 25, 26, 15, 18),
+    # Uma coluna por loja; o nome do produto fica com o que sobra da largura da página.
+    store_width = min(25, 110 / len(stores))
+    with pdf.table(col_widths=(24, 164 - store_width * len(stores), *[store_width] * len(stores), 26, 15, 18),
                    headings_style=FontFace(emphasis="BOLD", fill_color=(225, 232, 229)), line_height=3.6,
-                   text_align=("LEFT", "LEFT", "RIGHT", "RIGHT", "RIGHT", "RIGHT", "LEFT", "RIGHT", "LEFT")) as table:
-        table.row(("Marca", "Produto", *[STORE_LABELS[store] for store in STORES], "Mais barata", "Diferença", "Cruzamento"))
+                   text_align=("LEFT", "LEFT", *["RIGHT"] * len(stores), "LEFT", "RIGHT", "LEFT")) as table:
+        table.row(("Marca", "Produto", *[STORE_LABELS[store] for store in stores], "Mais barata", "Diferença", "Cruzamento"))
         for brand, name, prices, cheapest, gap, confidence in rows:
-            table.row((brand, name, *[prices[store] for store in STORES], cheapest, gap, confidence))
+            table.row((brand, name, *[prices[store] for store in stores], cheapest, gap, confidence))
 
     # Seção 2: todos os produtos.
     pdf.add_page()
@@ -240,8 +245,8 @@ STEROID_WORDS = {
     "dihydroboldenona", "equipoise", "anadrol", "winstrol", "halotestin", "mastebolin", "testobolin", "nandrobolin",
     "sustanon", "primobolan", "decanoato", "enantato", "cipionato", "propionato", "undecilenato", "fenilpropionato",
 }
-STEROID_CATEGORIES = {"anabolizante", "hormonais e anabolizantes", "hormonios"}
-PEPTIDE_CATEGORIES = {"peptideo", "peptideos e compostos", "hgh"}
+STEROID_CATEGORIES = {"anabolizante", "anabolizantes", "hormonais e anabolizantes", "hormonios"}
+PEPTIDE_CATEGORIES = {"peptideo", "peptideos", "peptideos e compostos", "hgh"}
 
 
 def product_type(items: list[dict[str, Any]]) -> str:
