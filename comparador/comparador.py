@@ -932,14 +932,36 @@ def last_states(connection: sqlite3.Connection, store: str) -> dict[str, sqlite3
     return {row["produto_id"]: row for row in rows}
 
 
-def promo_message(store: str, item: dict[str, Any], before_price: float, rate: float) -> str:
-    """Mensagem avulsa de promoção: preço anterior, preço atual e a queda."""
+def promo_history_note(connection: sqlite3.Connection, store: str, item: dict[str, Any], rate: float, days: int = 90) -> str:
+    """Compara o preço novo com o histórico do produto: queda de verdade ou volta a um preço que já existiu."""
+    cutoff = (utc_now() - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = connection.execute(
+        "SELECT preco, visto_em FROM historico WHERE loja = ? AND produto_id = ? AND visto_em >= ? AND id < "
+        "(SELECT MAX(id) FROM historico WHERE loja = ? AND produto_id = ?) ORDER BY id",
+        (store, item["id"], cutoff, store, item["id"]),
+    ).fetchall()
+    if not rows:
+        return ""
+    since = datetime.fromisoformat(rows[0]["visto_em"]).astimezone()
+    lowest = min(rows, key=lambda row: (row["preco"], row["visto_em"]))
+    if item["preco"] < lowest["preco"] * 0.99:
+        return f"📉 Menor preço desde {since:%d/%m} (o mínimo antes era {format_value(lowest['preco'], rate)})"
+    if item["preco"] <= lowest["preco"] * 1.01:
+        return f"Igual ao menor preço desde {since:%d/%m}"
+    when = datetime.fromisoformat(lowest["visto_em"]).astimezone()
+    return f"⚠️ Já esteve mais barato: {format_value(lowest['preco'], rate)} em {when:%d/%m}"
+
+
+def promo_message(store: str, item: dict[str, Any], before_price: float, rate: float, history_note: str = "") -> str:
+    """Mensagem avulsa de promoção: preço anterior, preço atual, a queda e como fica no histórico."""
     drop = (before_price - item["preco"]) / before_price * 100
     lines = [
         f"🔥 *PROMO* · {STORE_LABELS[store]}",
         named(item),
         f"De {format_value(before_price, rate)} por *{format_value(item['preco'], rate)}* (-{drop:.0f}%)",
     ]
+    if history_note:
+        lines.append(history_note)
     tiers = item.get("atacado") or []
     if tiers:
         best = min(tiers, key=lambda tier: tier["preco"])
@@ -999,7 +1021,7 @@ def record_history(
             )
             dropped = before["preco"] > 0 and (before["preco"] - item["preco"]) / before["preco"] * 100 >= promo_drop_percent
             if promos is not None and dropped and item["disponivel"]:
-                promos.append(promo_message(store, item, before["preco"], rate))
+                promos.append(promo_message(store, item, before["preco"], rate, promo_history_note(connection, store, item, rate)))
         if bool(before["disponivel"]) != item["disponivel"]:
             if item["disponivel"]:
                 summaries.append(f"VOLTOU ({label}): {named(item)} — {alert_value(item, rate)}")

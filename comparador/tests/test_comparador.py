@@ -344,10 +344,23 @@ class HistoryTests(unittest.TestCase):
             promos=promos,
         )
 
-        self.assertEqual(
-            promos,
-            ["🔥 *PROMO* · ByPharmacon\nProduto A\nDe US$ 100.00 (R$ 500,00) por *US$ 80.00 (R$ 400,00)* (-20%)"],
+        self.assertEqual(len(promos), 1)
+        self.assertTrue(
+            promos[0].startswith("🔥 *PROMO* · ByPharmacon\nProduto A\nDe US$ 100.00 (R$ 500,00) por *US$ 80.00 (R$ 400,00)* (-20%)\n📉 Menor preço desde ")
         )
+        self.assertIn("(o mínimo antes era US$ 100.00 (R$ 500,00))", promos[0])
+
+    def test_promo_says_when_the_product_was_cheaper_before(self):
+        connection = open_database(Path(":memory:"))
+        for price in (70, 100):
+            record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=price), item(BYP, "b", "Produto B", "Marca")])
+        promos = []
+
+        record_history(connection, BYP, [item(BYP, "a", "Produto A", "Marca", price=80), item(BYP, "b", "Produto B", "Marca")], 5.0, promos)
+
+        # Caiu 20% (100 -> 80), mas há pouco tempo era 70: não é o menor preço.
+        self.assertEqual(len(promos), 1)
+        self.assertRegex(promos[0], r"\n⚠️ Já esteve mais barato: US\$ 70\.00 \(R\$ 350,00\) em \d\d/\d\d$")
 
     def test_no_promo_for_out_of_stock_or_price_increase(self):
         connection = open_database(Path(":memory:"))
