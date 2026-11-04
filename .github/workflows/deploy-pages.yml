@@ -28,7 +28,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Versao fixa: no Ubuntu 26 (o ubuntu-latest desde 19/10/2026) o Playwright nao instala o Chromium com --with-deps.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       # Coleta rapida: so o comparador roda; os arquivos da Respect Pharma sao reaproveitados do site no ar.
@@ -151,7 +152,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
