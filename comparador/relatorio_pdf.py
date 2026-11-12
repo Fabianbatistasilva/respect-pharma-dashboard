@@ -121,7 +121,7 @@ def build_pdf(data: dict[str, Any], path: Path) -> dict[str, int]:
             "shapetotal": "Estoque por filial (CDE, PJ, SG). Informa o princípio ativo (coluna Composição).",
             "bypharmacon": "Preço de 1 unidade; faixas de 5+ e 20+ unidades com desconto.",
             "atacadoparaguai": "Só a categoria Farma. Informa apenas se tem ou não estoque.",
-            "atacadobrasil": "Grupo Medicamentos. Preço de 1 a 2 unidades; faixas de 3+, 5+ e 10+ unidades. Só lista o que tem estoque.",
+            "atacadobrasil": "Grupo Medicamentos. Preço de 1 a 4 unidades; faixas de 5+, 10+ e 50+ unidades. Só lista o que tem estoque.",
             "life": "Catálogo em PDF enviado pela loja: preços da data do catálogo, sem estoque informado.",
         }
         for store in stores:

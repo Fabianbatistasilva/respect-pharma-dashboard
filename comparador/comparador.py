@@ -55,11 +55,12 @@ STORE_LABELS = {
 CODE_PREFIX = {SHAPE: "ST", BYP: "BY", ATACADO: "AP", ATACADO_BR: "AB", **{store: info["prefixo"] for store, info in PDF_STORES.items()}}
 # Lojas cuja lista só traz o que tem estoque: produto que some esgotou, não foi removido.
 STORES_HIDING_OUT_OF_STOCK = {ATACADO, ATACADO_BR, *PDF_STORES}
-# Faixas de quantidade do Atacado Brasil: (campo da API, quantidade mínima).
-ATACADO_BR_TIERS = (("priceVarejoPlus", 3), ("priceAtacado", 5), ("priceAtacadoPlus", 10))
+# Faixas de quantidade do Atacado Brasil, na ordem da lista de preços da loja depois do Varejo (1 a 4 un.):
+# Varejo+ 5 a 9, Atacado 10 a 49, Atacado+ 50 ou mais.
+ATACADO_BR_TIERS = (5, 10, 50)
 PANEL_NOTES = [
-    "Atacado Brasil cobra por quantidade: o preço comparado é o de 1 a 2 unidades (Varejo). "
-    "As faixas de 3+, 5+ e 10+ unidades aparecem logo abaixo do preço; a vitrine do site mostra a de 10+.",
+    "Atacado Brasil cobra por quantidade: o preço comparado é o de 1 a 4 unidades (Varejo). "
+    "As faixas de 5+, 10+ e 50+ unidades aparecem logo abaixo do preço; a vitrine do site mostra a de 50+.",
     "No Atacado Brasil, produto sem estoque some da lista da loja; por isso ele aparece aqui como esgotado, não como removido.",
     "Do Atacado Paraguai entram as seções Promoções, Tirzep, Reta, Pept. e Anabol do menu; seção vazia na loja não traz produto.",
 ]
@@ -96,9 +97,9 @@ DEFAULTS = {
     "atacado_category": "832,1511",
     # A cotação do dia aparece no cabeçalho de qualquer página da loja.
     "atacado_rate_url": "https://atacadoparaguai.com.py/",
-    "atacadobrasil_api_url": "https://api.atacadobrasilpy.com/products",
+    # Site novo (desde 02/11/2026): a lista vem por IDs, em blocos, e já traz a cotação da loja.
+    "atacadobrasil_api_url": "https://atacadobrasilpy.com/api/products",
     "atacadobrasil_group": "medicamentos",
-    "atacadobrasil_rate_url": "https://api.atacadobrasilpy.com/exchange/rates",
     # Avisar no WhatsApp as mudanças das outras lojas (o monitor já avisa as do Shape Total).
     "notify_changes": True,
     "max_alert_items": 30,
@@ -760,7 +761,10 @@ def fetch_atacado_rate(url: str, timeout: int, attempts: int = 3) -> float:
             failure = exc
             continue
         page = body.decode("utf-8", errors="replace")
-        found = re.search(r"atacado-cotacao-dolar.*?=\s*</span>\s*<strong>\s*(\d+[.,]\d+)", page, re.S)
+        # Cabeçalho novo (desde 11/2026): <div class="nexo-currency"><span>1 USD</span><strong>R$ 5,75</strong>; e o antigo.
+        found = re.search(r"nexo-currency.{0,200}?1\s*USD.{0,120}?R\$\s*(\d+[.,]\d+)", page, re.S) or re.search(
+            r"atacado-cotacao-dolar.*?=\s*</span>\s*<strong>\s*(\d+[.,]\d+)", page, re.S
+        )
         rate = to_float(found.group(1)) if found else 0.0
         if 1 < rate < 20:
             return rate
@@ -768,66 +772,112 @@ def fetch_atacado_rate(url: str, timeout: int, attempts: int = 3) -> float:
 
 
 def normalize_atacadobrasil(product: dict[str, Any]) -> dict[str, Any]:
-    price = number(product.get("price"))
+    """Produto da API nova, em campos curtos: n nome, b marca, c categoria, g grupo, s SKU, p preços, q estoque."""
+    prices = [number(value) for value in product.get("p") or []]
+    price = prices[0] if prices else 0.0
     tiers = [
-        {"min": minimum, "preco": number(product.get(field))}
-        for field, minimum in ATACADO_BR_TIERS
-        if number(product.get(field)) > 0 and number(product.get(field)) != price
+        {"min": minimum, "preco": value}
+        for minimum, value in zip(ATACADO_BR_TIERS, prices[1:])
+        if value > 0 and value != price
     ]
-    stock = integer(product.get("effectiveStock"))
+    stock = integer(product.get("q"))
+    sku = str(product.get("s") or "").strip()
     return {
         "loja": ATACADO_BR,
         "id": str(product.get("id") or ""),
-        # A loja chama de "B-3239"; aqui vira AB-3239 para não se confundir com o ByPharmacon.
-        "codigo": product_code(ATACADO_BR, str(product.get("legacyCode") or "").split("-")[-1] or str(product.get("id") or "")[:6]),
-        "nome": str(product.get("name") or "").replace("–", "-").strip(),
-        "marca": str((product.get("brand") or {}).get("name") or "").strip(),
+        # O SKU é o número que a loja já usava ("B-3239"); aqui vira AB-3239 para não se confundir com o ByPharmacon.
+        "codigo": product_code(ATACADO_BR, sku or str(product.get("id") or "")),
+        "nome": str(product.get("n") or "").replace("–", "-").strip(),
+        "marca": str(product.get("b") or "").strip(),
         "marca_confiavel": True,
-        "categoria": str((product.get("category") or {}).get("name") or "").strip(),
+        "categoria": str(product.get("g") or product.get("c") or "").strip(),
         "detalhe": "",
         "apresentacao": "",
         "quantidade": "",
         "dose": "",
-        # Preço de 1 a 2 unidades (Varejo): o comparável com as outras lojas.
+        # Preço de 1 a 4 unidades (Varejo): o comparável com as outras lojas.
         "preco": price,
         "preco_original": None,
         "atacado": tiers,
         "estoque": stock,
         "estoque_detalhe": "",
-        "disponivel": stock > 0 and bool(product.get("active", True)),
-        "url": f"https://atacadobrasilpy.com/product/{product.get('slug') or ''}",
+        "disponivel": stock > 0,
+        "url": f"https://atacadobrasilpy.com/produto/{product.get('slug') or ''}",
     }
 
 
-def fetch_atacadobrasil(url: str, group: str, timeout: int) -> list[dict[str, Any]]:
-    products: list[dict[str, Any]] = []
-    page, last_page = 1, 1
-    while page <= min(last_page, 30):
-        request = urllib.request.Request(
-            f"{url}?group={group}&limit=500&page={page}",
-            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
-        )
+ATACADO_BR_BLOCK = 100  # IDs por consulta
+ATACADO_BR_MARGIN = 1000  # continua procurando até passar disso além do maior ID achado
+
+
+def fetch_atacadobrasil(url: str, group: str, timeout: int) -> tuple[list[dict[str, Any]], float]:
+    """Catálogo e cotação do site novo do Atacado Brasil.
+
+    A API não lista a loja inteira: devolve os produtos dos IDs pedidos (só os que têm estoque). Os IDs são
+    números em sequência, então a coleta pede blocos de 100 até passar com folga do maior ID existente, e fica
+    com os da categoria pedida. Cada resposta traz também a cotação da loja ("rate").
+    """
+    def fetch_block(start: int) -> tuple[list[dict[str, Any]], float]:
+        ids = ",".join(str(number_id) for number_id in range(start, start + ATACADO_BR_BLOCK))
+        request = urllib.request.Request(f"{url}?ids={ids}", headers={"Accept": "application/json", "User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise ValueError("Resposta do Atacado Brasil não contém a lista 'data'.")
-        products.extend(payload["data"])
-        last_page = integer((payload.get("meta") or {}).get("lastPage"), 1)
-        page += 1
+        if not isinstance(payload, dict) or not isinstance(payload.get("products"), list):
+            raise ValueError("Resposta do Atacado Brasil não contém a lista 'products'.")
+        return payload["products"], number(payload.get("rate"))
 
-    items = {item["id"]: item for item in map(normalize_atacadobrasil, products) if item["id"] and item["nome"]}
+    products: list[dict[str, Any]] = []
+    rates: list[float] = []
+    scanned = 0
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        while True:
+            highest = max((integer(product.get("id")) for product in products), default=0)
+            limit = -(-max(3000, highest + ATACADO_BR_MARGIN) // ATACADO_BR_BLOCK) * ATACADO_BR_BLOCK  # múltiplo do bloco
+            if scanned >= limit or scanned >= 50_000:
+                break
+            for found, rate in pool.map(fetch_block, range(scanned + 1, limit + 1, ATACADO_BR_BLOCK)):
+                products.extend(found)
+                rates.append(rate)
+            scanned = limit
+
+    wanted = normalize_text(group)
+    chosen = [product for product in products if normalize_text(product.get("c") or "") == wanted]
+    items = {item["id"]: item for item in map(normalize_atacadobrasil, chosen) if item["id"] and item["nome"]}
     if len(items) < 30:
-        raise ValueError(f"Catálogo do Atacado Brasil suspeito: somente {len(items)} produtos.")
-    return list(items.values())
+        raise ValueError(f"Catálogo do Atacado Brasil suspeito: somente {len(items)} produtos em {group}.")
+    rate = max(rates, default=0.0)
+    return list(items.values()), rate if 1 < rate < 20 else 0.0
 
 
-def fetch_atacadobrasil_rate(url: str, timeout: int) -> float:
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        rate = number(json.load(response).get("brl"))
-    if not 1 < rate < 20:
-        raise ValueError("Resposta de câmbio do Atacado Brasil sem cotação em reais.")
-    return rate
+def adopt_new_ids(connection: sqlite3.Connection, store: str, items: list[dict[str, Any]]) -> int:
+    """Quando a loja troca a numeração interna mas mantém o código, o histórico (e os favoritos) passam para o ID novo.
+
+    A faixa de atacado gravada é apagada na última linha do produto: a loja mudou as faixas junto, e comparar a
+    antiga com a nova avisaria "FAIXAS" em todos os produtos. Devolve quantos produtos foram religados.
+    """
+    adopted = 0
+    for item in items:
+        code = item.get("codigo")
+        if not code:
+            continue
+        old_ids = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT produto_id FROM historico WHERE loja = ? AND codigo = ? AND produto_id != ?",
+                (store, code, item["id"]),
+            )
+        ]
+        if not old_ids:
+            continue
+        marks = ",".join("?" * len(old_ids))
+        connection.execute(f"UPDATE historico SET produto_id = ? WHERE loja = ? AND produto_id IN ({marks})", (item["id"], store, *old_ids))
+        connection.execute(f"UPDATE favoritos SET produto_id = ? WHERE loja = ? AND produto_id IN ({marks})", (item["id"], store, *old_ids))
+        connection.execute(
+            "UPDATE historico SET faixas = NULL WHERE id = (SELECT MAX(id) FROM historico WHERE loja = ? AND produto_id = ?)",
+            (store, item["id"]),
+        )
+        adopted += 1
+    return adopted
 
 
 def alert_value(item: dict[str, Any], rate: float) -> str:
@@ -1262,10 +1312,8 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
             ),
             lambda: fetch_atacado_rate(settings["atacado_rate_url"], timeout),
         ),
-        ATACADO_BR: (
-            lambda: fetch_atacadobrasil(settings["atacadobrasil_api_url"], settings["atacadobrasil_group"], timeout),
-            lambda: fetch_atacadobrasil_rate(settings["atacadobrasil_rate_url"], timeout),
-        ),
+        # A cotação vem na mesma resposta do catálogo, como no Shape Total.
+        ATACADO_BR: (lambda: fetch_atacadobrasil(settings["atacadobrasil_api_url"], settings["atacadobrasil_group"], timeout), None),
     }
     # Lojas de PDF: o último catálogo guardado. Sem cotação própria, usam a de outra loja (sem aviso: é o esperado).
     catalogs_folder = resolve_path(config_path, settings["catalogs_path"])
@@ -1327,6 +1375,10 @@ def run(config_path: Path, send_alerts: bool = True) -> int:
     for store in STORES:
         if not items_by_store[store]:
             continue  # coleta falhou: sem lista, não dá para saber o que mudou ou foi removido
+        if store == ATACADO_BR:
+            adopted = adopt_new_ids(connection, store, items_by_store[store])
+            if adopted:
+                logger.info("Comparador: %s produtos do %s religados ao histórico pelo código.", adopted, STORE_LABELS[store])
         changes = record_history(
             connection, store, items_by_store[store], rates[store], promos, number(settings["promo_drop_percent"], 20)
         )

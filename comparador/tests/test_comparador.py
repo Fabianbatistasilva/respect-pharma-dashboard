@@ -17,6 +17,7 @@ from comparador import (
     match_products,
     match_score,
     normalize_atacado,
+    adopt_new_ids,
     normalize_atacadobrasil,
     normalize_bypharmacon,
     ensure_unique_codes,
@@ -175,18 +176,17 @@ class AtacadoTests(unittest.TestCase):
 
 
 class AtacadoBrasilTests(unittest.TestCase):
+    # Formato da API do site novo (campos curtos).
     PRODUCT = {
-        "id": "abc",
-        "name": "Peptídeo ZPHC Retatrutide 80MG - 05 Vial (liofilizada)",
+        "id": 615,
+        "s": "ABC",
+        "n": "Peptídeo ZPHC Retatrutide 80MG - 05 Vial (liofilizada)",
         "slug": "zphc-reta-80",
-        "price": "275",
-        "priceVarejoPlus": "273",
-        "priceAtacado": "271",
-        "priceAtacadoPlus": "270",
-        "effectiveStock": 230,
-        "active": True,
-        "brand": {"name": "ZPHC"},
-        "category": {"name": "Estética"},
+        "b": "ZPHC",
+        "c": "Medicamentos",
+        "g": "Peptídeos",
+        "p": [275, 273, 271, 270],
+        "q": 230,
     }
 
     def test_compares_by_single_unit_price_and_keeps_quantity_tiers(self):
@@ -195,10 +195,11 @@ class AtacadoBrasilTests(unittest.TestCase):
         self.assertEqual(product["preco"], 275)
         self.assertEqual(
             product["atacado"],
-            [{"min": 3, "preco": 273}, {"min": 5, "preco": 271}, {"min": 10, "preco": 270}],
+            [{"min": 5, "preco": 273}, {"min": 10, "preco": 271}, {"min": 50, "preco": 270}],
         )
         self.assertTrue(product["disponivel"])
-        self.assertEqual(product["url"], "https://atacadobrasilpy.com/product/zphc-reta-80")
+        self.assertEqual((product["id"], product["codigo"], product["marca"], product["categoria"]), ("615", "AB-ABC", "ZPHC", "Peptídeos"))
+        self.assertEqual(product["url"], "https://atacadobrasilpy.com/produto/zphc-reta-80")
 
     def test_brand_field_decides_even_when_name_starts_with_product_type(self):
         ours = normalize_atacadobrasil(self.PRODUCT)
@@ -217,18 +218,18 @@ class AtacadoBrasilTests(unittest.TestCase):
 
         self.assertEqual(
             summaries,
-            ["PREÇO (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 10+ un.: US$ 270.00"],
+            ["PREÇO (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — US$ 280.00 → 1 un.: US$ 275.00 (R$ 1.375,00) · 50+ un.: US$ 270.00"],
         )
 
     def test_quantity_tier_change_is_reported_when_unit_price_stays(self):
         connection = open_database(Path(":memory:"))
         product = normalize_atacadobrasil(self.PRODUCT)
         record_history(connection, ATACADO_BR, [product])
-        cheaper_wholesale = normalize_atacadobrasil(dict(self.PRODUCT, priceAtacadoPlus="265"))
+        cheaper_wholesale = normalize_atacadobrasil(dict(self.PRODUCT, p=[275, 273, 271, 265]))
 
         summaries = record_history(connection, ATACADO_BR, [cheaper_wholesale])
 
-        self.assertEqual(summaries, ["FAIXAS (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — 10+ un.: US$ 270.00 → US$ 265.00"])
+        self.assertEqual(summaries, ["FAIXAS (Atacado Brasil): " + "[AB-ABC] " + product["nome"] + " — 50+ un.: US$ 270.00 → US$ 265.00"])
         self.assertEqual(record_history(connection, ATACADO_BR, [cheaper_wholesale]), [])
 
     def test_history_from_before_tier_tracking_does_not_trigger_alerts(self):
@@ -246,7 +247,7 @@ class AtacadoBrasilTests(unittest.TestCase):
     def test_product_missing_from_list_is_out_of_stock_not_removed(self):
         connection = open_database(Path(":memory:"))
         product = normalize_atacadobrasil(self.PRODUCT)
-        other = dict(product, id="def", nome="Outro produto")
+        other = dict(product, id="def", codigo="AB-DEF", nome="Outro produto")
         record_history(connection, ATACADO_BR, [product, other])
 
         self.assertEqual(record_history(connection, ATACADO_BR, [other]), ["ESGOTOU (Atacado Brasil): " + "[AB-ABC] " + product["nome"]])
@@ -254,11 +255,98 @@ class AtacadoBrasilTests(unittest.TestCase):
         self.assertTrue(record_history(connection, ATACADO_BR, [product, other])[0].startswith("VOLTOU (Atacado Brasil)"))
 
 
+class AtacadoBrasilSiteNovoTests(unittest.TestCase):
+    def test_reads_the_catalog_by_id_blocks_and_keeps_the_rate(self):
+        from unittest import mock
+
+        import comparador
+
+        stock = {number: {"id": number, "s": str(3000 + number), "n": f"Produto {number}", "b": "ZPHC", "c": "Medicamentos",
+                          "g": "Hormônios", "p": [10, 9, 8, 7], "q": 5} for number in range(1, 3601, 9)}
+        stock[50] = dict(stock[50] if 50 in stock else {"id": 50, "s": "1", "n": "Celular", "p": [100], "q": 1}, c="Eletrônicos")
+        asked = []
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, *args):
+                return json.dumps(self.body).encode()
+
+        def urlopen(request, timeout=None):
+            ids = [int(value) for value in request.full_url.split("ids=")[1].split(",")]
+            asked.append(ids[0])
+            return Response({"rate": 5.71, "products": [stock[number] for number in ids if number in stock]})
+
+        with mock.patch.object(comparador.urllib.request, "urlopen", urlopen):
+            items, rate = comparador.fetch_atacadobrasil("https://loja/api/products", "medicamentos", 5)
+
+        self.assertEqual(rate, 5.71)
+        # Achou ID até 3592: procurou até 3592 + 1000, em blocos de 100.
+        self.assertEqual(max(asked), 4501)
+        self.assertEqual(len(items), len([p for p in stock.values() if p["c"] == "Medicamentos"]))
+        self.assertTrue(all(item["codigo"].startswith("AB-") for item in items))
+
+    def test_history_follows_the_product_when_the_store_renumbers_it(self):
+        connection = open_database(Path(":memory:"))
+        connection.execute(
+            "INSERT INTO historico(loja, produto_id, nome, preco, disponivel, visto_em, faixas, codigo) VALUES(?, ?, ?, ?, 1, ?, ?, ?)",
+            (ATACADO_BR, "uuid-velho", "Produto", 10, "2026-10-01T00:00:00+00:00", '[{"min": 3, "preco": 9}]', "AB-3350"),
+        )
+        connection.execute(
+            "INSERT INTO favoritos(participante, loja, produto_id, codigo, nome, criado_em) VALUES(?, ?, ?, ?, ?, ?)",
+            ("pessoa", ATACADO_BR, "uuid-velho", "AB-3350", "Produto", "2026-10-01T00:00:00+00:00"),
+        )
+        product = normalize_atacadobrasil({"id": 615, "s": "3350", "n": "Produto", "p": [10, 9.5, 9, 8], "q": 3})
+
+        self.assertEqual(adopt_new_ids(connection, ATACADO_BR, [product]), 1)
+        # Mesmo preço, faixas novas (5+/10+/50+): nada a avisar, e o histórico continua no mesmo produto.
+        self.assertEqual(record_history(connection, ATACADO_BR, [product]), [])
+        self.assertEqual(connection.execute("SELECT DISTINCT produto_id FROM historico").fetchall()[0][0], "615")
+        self.assertEqual(connection.execute("SELECT produto_id FROM favoritos").fetchone()[0], "615")
+        self.assertEqual(adopt_new_ids(connection, ATACADO_BR, [product]), 0)
+
+
+class AtacadoParaguaiRateHeaderTests(unittest.TestCase):
+    def test_reads_the_new_and_the_old_header(self):
+        from unittest import mock
+
+        import comparador
+
+        pages = [
+            b'<div class="nexo-currency"><span>1 USD</span><strong>R$ 5,75</strong></p>',
+            b'<span class="atacado-cotacao-dolar"> <strong>USD/BRL</strong> <span>=</span> <strong>5.09</strong> </span>',
+        ]
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return self.body
+
+        for page, expected in zip(pages, (5.75, 5.09)):
+            with mock.patch.object(comparador.urllib.request, "urlopen", lambda request, timeout=None, page=page: Response(page)):
+                self.assertEqual(comparador.fetch_atacado_rate("https://loja/", 5), expected)
+
+
 class CodeTests(unittest.TestCase):
     def test_each_store_gets_its_own_prefix_and_number(self):
         byp = normalize_bypharmacon({"id": "prod_1", "name": "Produto", "sku": "3605", "priceRetail": 10, "inStock": True})
         atacado = normalize_atacado({"id": 45220, "name": "Produto", "prices": {"price": "100", "currency_code": "USD"}})
-        brasil = normalize_atacadobrasil({"id": "uuid", "legacyCode": "B-3239", "name": "Produto", "price": "10", "effectiveStock": 1})
+        brasil = normalize_atacadobrasil({"id": 615, "s": "3239", "n": "Produto", "p": [10], "q": 1})
 
         self.assertEqual([byp["codigo"], atacado["codigo"], brasil["codigo"]], ["BY-3605", "AP-45220", "AB-3239"])
 
